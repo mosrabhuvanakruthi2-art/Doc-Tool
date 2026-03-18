@@ -8,6 +8,7 @@ const featureSchema = new mongoose.Schema({
   description: { type: String, default: '' },
   family: { type: String, default: '' },
   screenshots: [{ type: String }],
+  order: { type: Number, default: 0 },
 }, {
   timestamps: true,
 });

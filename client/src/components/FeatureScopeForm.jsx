@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import FeatureCard from './FeatureCard';
-import { PRODUCT_TYPES, COMBINATIONS_BY_PRODUCT } from '../constants';
+import { useProductConfig } from '../ProductConfigContext';
 
 const emptyFeature = () => ({
   name: '',
@@ -12,6 +12,8 @@ const emptyFeature = () => ({
 });
 
 function FeatureScopeForm({ onSaved }) {
+  const { productTypes, combinationsByProduct, configs, refresh } = useProductConfig();
+
   const [scope, setScope] = useState('');
   const [productType, setProductType] = useState('');
   const [combination, setCombination] = useState('');
@@ -20,7 +22,15 @@ function FeatureScopeForm({ onSaved }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  const combinations = productType ? (COMBINATIONS_BY_PRODUCT[productType] || []) : [];
+  const [showNewPT, setShowNewPT] = useState(false);
+  const [newPTName, setNewPTName] = useState('');
+  const [savingPT, setSavingPT] = useState(false);
+
+  const [showNewCombo, setShowNewCombo] = useState(false);
+  const [newComboName, setNewComboName] = useState('');
+  const [savingCombo, setSavingCombo] = useState(false);
+
+  const combinations = productType ? (combinationsByProduct[productType] || []) : [];
 
   const handleFeatureChange = (index, updated) => {
     setFeatures(prev => prev.map((f, i) => (i === index ? updated : f)));
@@ -45,28 +55,72 @@ function FeatureScopeForm({ onSaved }) {
     return data.paths;
   };
 
+  const cancelNewPT = () => {
+    setShowNewPT(false);
+    setNewPTName('');
+  };
+
+  const cancelNewCombo = () => {
+    setShowNewCombo(false);
+    setNewComboName('');
+  };
+
+  const handleCreateProductType = async () => {
+    if (!newPTName.trim()) { setError('Product type name is required.'); return; }
+    setSavingPT(true);
+    setError('');
+    try {
+      const res = await fetch('/api/product-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newPTName.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      await refresh();
+      setProductType(newPTName.trim());
+      setSuccess(`Product type "${newPTName.trim()}" created!`);
+      cancelNewPT();
+    } catch (err) {
+      setError(err.message);
+    }
+    setSavingPT(false);
+  };
+
+  const handleCreateCombination = async () => {
+    if (!newComboName.trim()) { setError('Combination name is required.'); return; }
+    const config = configs.find(c => c.name === productType);
+    if (!config) { setError('Select a product type first.'); return; }
+    setSavingCombo(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/product-config/${config.id}/combinations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ combination: newComboName.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      await refresh();
+      setCombination(newComboName.trim());
+      setSuccess(`Combination "${newComboName.trim()}" created!`);
+      cancelNewCombo();
+    } catch (err) {
+      setError(err.message);
+    }
+    setSavingCombo(false);
+  };
+
   const handleSave = async () => {
     setError('');
     setSuccess('');
 
-    if (!scope) {
-      setError('Please select a Scope Status.');
-      return;
-    }
-    if (!productType) {
-      setError('Please select a Product Type.');
-      return;
-    }
-    if (combinations.length > 0 && !combination) {
-      setError('Please select a Combination.');
-      return;
-    }
+    if (!scope) { setError('Please select a Scope Status.'); return; }
+    if (!productType) { setError('Please select a Product Type.'); return; }
+    if (combinations.length > 0 && !combination) { setError('Please select a Combination.'); return; }
 
     const validFeatures = features.filter(f => f.name.trim());
-    if (validFeatures.length === 0) {
-      setError('Please add at least one feature with a name.');
-      return;
-    }
+    if (validFeatures.length === 0) { setError('Please add at least one feature with a name.'); return; }
 
     setSaving(true);
 
@@ -116,6 +170,8 @@ function FeatureScopeForm({ onSaved }) {
     setFeatures([emptyFeature()]);
     setError('');
     setSuccess('');
+    cancelNewPT();
+    cancelNewCombo();
   };
 
   return (
@@ -140,37 +196,89 @@ function FeatureScopeForm({ onSaved }) {
         <div className="form-section">
           <div className="form-group">
             <label>Product Type <span className="required">*</span></label>
-            <select
-              value={productType}
-              onChange={(e) => { setProductType(e.target.value); setCombination(''); setSuccess(''); }}
-            >
-              <option value="">-- Select Product Type --</option>
-              {PRODUCT_TYPES.map(pt => (
-                <option key={pt} value={pt}>{pt}</option>
-              ))}
-            </select>
+            <div className="select-with-action">
+              <select
+                value={productType}
+                onChange={(e) => { setProductType(e.target.value); setCombination(''); setSuccess(''); cancelNewPT(); }}
+              >
+                <option value="">-- Select Product Type --</option>
+                {productTypes.map(pt => (
+                  <option key={pt} value={pt}>{pt}</option>
+                ))}
+              </select>
+              {!showNewPT && (
+                <button className="btn-create-new" onClick={() => setShowNewPT(true)} title="Create new product type">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  New Product Type
+                </button>
+              )}
+            </div>
           </div>
+          {showNewPT && (
+            <div className="inline-create-form">
+              <input
+                type="text"
+                value={newPTName}
+                onChange={(e) => setNewPTName(e.target.value)}
+                placeholder="Enter new product type name"
+                onKeyDown={(e) => e.key === 'Enter' && handleCreateProductType()}
+                autoFocus
+              />
+              <button className="btn-create-action" onClick={handleCreateProductType} disabled={savingPT}>
+                {savingPT ? 'Creating...' : 'Create'}
+              </button>
+              <button className="btn-cancel-action" onClick={cancelNewPT}>
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {scope && productType && combinations.length > 0 && (
+      {scope && productType && (
         <div className="form-section">
           <div className="form-group">
-            <label>Combination <span className="required">*</span></label>
-            <select
-              value={combination}
-              onChange={(e) => { setCombination(e.target.value); setSuccess(''); }}
-            >
-              <option value="">-- Select Combination --</option>
-              {combinations.map(c => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+            <label>Combination</label>
+            <div className="select-with-action">
+              <select
+                value={combination}
+                onChange={(e) => { setCombination(e.target.value); setSuccess(''); cancelNewCombo(); }}
+              >
+                <option value="">-- Select Combination --</option>
+                {combinations.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+              {!showNewCombo && (
+                <button className="btn-create-new" onClick={() => setShowNewCombo(true)} title="Create new combination">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  New Combination
+                </button>
+              )}
+            </div>
           </div>
+          {showNewCombo && (
+            <div className="inline-create-form">
+              <input
+                type="text"
+                value={newComboName}
+                onChange={(e) => setNewComboName(e.target.value)}
+                placeholder="Enter new combination name"
+                onKeyDown={(e) => e.key === 'Enter' && handleCreateCombination()}
+                autoFocus
+              />
+              <button className="btn-create-action" onClick={handleCreateCombination} disabled={savingCombo}>
+                {savingCombo ? 'Creating...' : 'Create'}
+              </button>
+              <button className="btn-cancel-action" onClick={cancelNewCombo}>
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {scope && productType && (combinations.length === 0 || combination) && (
+      {scope && productType && (
         <>
           <div className="form-section-header">
             <span className="scope-badge" data-scope={scope}>

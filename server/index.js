@@ -9,6 +9,8 @@ const jwt = require('jsonwebtoken');
 
 const Feature = require('./models/Feature');
 const Category = require('./models/Category');
+const CompatibilityMatrix = require('./models/CompatibilityMatrix');
+const ProductConfig = require('./models/ProductConfig');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -47,7 +49,19 @@ app.get('/api/admin/verify', (req, res) => {
 // --------------- MongoDB Connection ---------------
 
 mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('Connected to MongoDB Atlas'))
+  .then(async () => {
+    console.log('Connected to MongoDB Atlas');
+    const count = await ProductConfig.countDocuments();
+    if (count === 0) {
+      const seed = [
+        { name: 'Message', combinations: ['Slack to Teams','Slack to Chat','Slack to Slack','Teams to Teams','Teams to Chat','Chat to Teams','Chat to Chat'], featureListUrl: 'https://cloudfuzecom-my.sharepoint.com/:x:/g/personal/bhuvana_mosra_cloudfuze_com/IQBw8o6KU3A5TKl4fifiRa17AR-FGG1MzGW0pbeIDXI-GXM?e=yGrOId', order: 0 },
+        { name: 'Mail', combinations: ['Outlook to Outlook','Gmail to Gmail','Outlook to Gmail','Gmail to Outlook'], featureListUrl: '', order: 1 },
+        { name: 'Content', combinations: ['Shared Drive to Shared Drive','SPO to SPO','OneDrive to OneDrive','Shared Drive to SPO','SPO to Shared Drive','Shared Drive to OneDrive','OneDrive to Shared Drive','SPO to OneDrive','OneDrive to SPO'], featureListUrl: '', order: 2 },
+      ];
+      await ProductConfig.insertMany(seed);
+      console.log('Seeded product configurations');
+    }
+  })
   .catch(err => {
     console.error('MongoDB connection error:', err.message);
     process.exit(1);
@@ -83,7 +97,7 @@ if (useCloudinary) {
     params: {
       folder: 'docproject-screenshots',
       allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
-      transformation: [{ quality: 'auto', fetch_format: 'auto' }],
+      resource_type: 'image',
     },
   });
 
@@ -195,6 +209,131 @@ app.post('/api/categories', async (req, res) => {
   }
 });
 
+// --------------- Product Config ---------------
+
+app.get('/api/product-config', async (req, res) => {
+  try {
+    const configs = await ProductConfig.find().sort({ order: 1 }).lean();
+    res.json({
+      productTypes: configs.map(c => c.name),
+      combinationsByProduct: configs.reduce((acc, c) => { acc[c.name] = c.combinations; return acc; }, {}),
+      featureListUrls: configs.reduce((acc, c) => { acc[c.name] = c.featureListUrl || ''; return acc; }, {}),
+      configs: configs.map(c => ({ id: c._id.toString(), name: c.name, combinations: c.combinations, featureListUrl: c.featureListUrl || '', order: c.order })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/product-config', async (req, res) => {
+  try {
+    const { name, combinations, featureListUrl } = req.body;
+    if (!name) return res.status(400).json({ error: 'Product type name is required' });
+    const existing = await ProductConfig.findOne({ name }).lean();
+    if (existing) return res.status(400).json({ error: 'Product type already exists' });
+    const maxOrder = await ProductConfig.findOne().sort({ order: -1 }).lean();
+    const order = maxOrder ? (maxOrder.order || 0) + 1 : 0;
+    const config = await ProductConfig.create({ name, combinations: combinations || [], featureListUrl: featureListUrl || '', order });
+    res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations, featureListUrl: config.featureListUrl, order: config.order } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/product-config/reorder', async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
+    const ops = orderedIds.map((id, idx) =>
+      ProductConfig.findByIdAndUpdate(id, { order: idx })
+    );
+    await Promise.all(ops);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/product-config/:id', async (req, res) => {
+  try {
+    const { name, combinations, featureListUrl } = req.body;
+    const update = {};
+    if (name !== undefined) update.name = name;
+    if (combinations !== undefined) update.combinations = combinations;
+    if (featureListUrl !== undefined) update.featureListUrl = featureListUrl;
+    const config = await ProductConfig.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
+    if (!config) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations, featureListUrl: config.featureListUrl, order: config.order } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/product-config/:id/reorder-combinations', async (req, res) => {
+  try {
+    const { combinations } = req.body;
+    if (!Array.isArray(combinations)) return res.status(400).json({ error: 'combinations array required' });
+    const config = await ProductConfig.findById(req.params.id);
+    if (!config) return res.status(404).json({ error: 'Not found' });
+    config.combinations = combinations;
+    await config.save();
+    res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/product-config/:id/combinations', async (req, res) => {
+  try {
+    const { combination } = req.body;
+    if (!combination) return res.status(400).json({ error: 'Combination name is required' });
+    const config = await ProductConfig.findById(req.params.id);
+    if (!config) return res.status(404).json({ error: 'Not found' });
+    if (config.combinations.includes(combination)) return res.status(400).json({ error: 'Combination already exists' });
+    config.combinations.push(combination);
+    await config.save();
+    res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/product-config/:id', async (req, res) => {
+  try {
+    const config = await ProductConfig.findByIdAndDelete(req.params.id);
+    if (!config) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/product-config/:id/combinations/:combo', async (req, res) => {
+  try {
+    const combo = decodeURIComponent(req.params.combo);
+    const config = await ProductConfig.findById(req.params.id);
+    if (!config) return res.status(404).json({ error: 'Not found' });
+    config.combinations = config.combinations.filter(c => c !== combo);
+    await config.save();
+    res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/features/by-scope', async (req, res) => {
+  try {
+    const { productType, scope, combination } = req.query;
+    if (!productType || !scope) return res.status(400).json({ error: 'productType and scope are required' });
+    const filter = { productType, scope };
+    if (combination) filter.combination = combination;
+    const result = await Feature.deleteMany(filter);
+    res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --------------- Features ---------------
 
 function mapFeature(f) {
@@ -208,6 +347,7 @@ function mapFeature(f) {
     description: f.description,
     family: f.family,
     screenshots: f.screenshots,
+    order: f.order || 0,
     createdAt: f.createdAt,
   };
 }
@@ -231,7 +371,7 @@ app.get('/api/features', async (req, res) => {
       filter.family = tag;
     }
 
-    const features = await Feature.find(filter).sort({ createdAt: -1 }).lean();
+    const features = await Feature.find(filter).sort({ order: 1, createdAt: -1 }).lean();
 
     const tagFilter = {};
     if (pt) tagFilter.productType = pt;
@@ -257,6 +397,9 @@ app.post('/api/features', async (req, res) => {
     if (!pt || !scope || !name) {
       return res.status(400).json({ error: 'productType, scope, and name are required' });
     }
+    const maxOrderDoc = await Feature.findOne({ productType: pt, scope, combination: combination || '' })
+      .sort({ order: -1 }).lean();
+    const nextOrder = maxOrderDoc ? (maxOrderDoc.order || 0) + 1 : 0;
     const feature = await Feature.create({
       productType: pt,
       scope,
@@ -265,6 +408,7 @@ app.post('/api/features', async (req, res) => {
       description: description || '',
       family: family || '',
       screenshots: screenshots || [],
+      order: nextOrder,
     });
     res.json({ success: true, feature: mapFeature(feature.toObject()) });
   } catch (err) {
@@ -293,6 +437,40 @@ app.post('/api/features/bulk', async (req, res) => {
     const saved = await Feature.insertMany(docs);
     const mapped = saved.map(f => mapFeature(f.toObject()));
     res.json({ success: true, features: mapped, count: mapped.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/features/rename-family', async (req, res) => {
+  try {
+    const { productType, scope, combination, oldFamily, newFamily } = req.body;
+    if (!productType || !scope || !oldFamily || !newFamily) {
+      return res.status(400).json({ error: 'productType, scope, oldFamily, and newFamily are required' });
+    }
+    const filter = { productType, scope, family: oldFamily };
+    if (combination) filter.combination = combination;
+    const result = await Feature.updateMany(filter, { family: newFamily });
+    res.json({ success: true, modified: result.modifiedCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/features/reorder', async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) {
+      return res.status(400).json({ error: 'orderedIds array is required' });
+    }
+    const ops = orderedIds.map((id, index) => ({
+      updateOne: {
+        filter: { _id: id },
+        update: { order: index },
+      },
+    }));
+    await Feature.bulkWrite(ops);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -351,6 +529,100 @@ app.post('/api/screenshots', upload.array('screenshots', 20), (req, res) => {
     res.json({ success: true, paths });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// --------------- Compatibility Matrix ---------------
+
+function slugify(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+app.get('/api/compatibility', async (req, res) => {
+  try {
+    const matrices = await CompatibilityMatrix.find()
+      .select('name slug order')
+      .sort({ order: 1, createdAt: 1 })
+      .lean();
+    res.json({ matrices });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/compatibility/:slug', async (req, res) => {
+  try {
+    const matrix = await CompatibilityMatrix.findOne({ slug: req.params.slug }).lean();
+    if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
+    res.json({ matrix: { ...matrix, id: matrix._id.toString() } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/compatibility', async (req, res) => {
+  try {
+    const { name, columns, rows, notes } = req.body;
+    if (!name || !columns || !rows) {
+      return res.status(400).json({ error: 'name, columns, and rows are required' });
+    }
+    let slug = slugify(name);
+    const existing = await CompatibilityMatrix.findOne({ slug }).lean();
+    if (existing) slug = slug + '-' + Date.now();
+    const maxOrder = await CompatibilityMatrix.findOne().sort({ order: -1 }).lean();
+    const order = maxOrder ? (maxOrder.order || 0) + 1 : 0;
+    const matrix = await CompatibilityMatrix.create({ name, slug, columns, rows, notes: notes || '', order });
+    res.json({ success: true, matrix: { ...matrix.toObject(), id: matrix._id.toString() } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/compatibility/:id', async (req, res) => {
+  try {
+    const { name, columns, rows, notes } = req.body;
+    const update = {};
+    if (name !== undefined) {
+      update.name = name;
+      update.slug = slugify(name);
+      const existing = await CompatibilityMatrix.findOne({ slug: update.slug, _id: { $ne: req.params.id } }).lean();
+      if (existing) update.slug = update.slug + '-' + Date.now();
+    }
+    if (columns !== undefined) update.columns = columns;
+    if (rows !== undefined) update.rows = rows;
+    if (notes !== undefined) update.notes = notes;
+    const matrix = await CompatibilityMatrix.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
+    if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
+    res.json({ success: true, matrix: { ...matrix, id: matrix._id.toString() } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/compatibility/:id', async (req, res) => {
+  try {
+    const matrix = await CompatibilityMatrix.findByIdAndDelete(req.params.id);
+    if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --------------- Image Proxy (for DOCX export) ---------------
+
+app.get('/api/image-proxy', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).send('Missing url param');
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return res.status(response.status).send('Failed to fetch image');
+    const contentType = response.headers.get('content-type') || 'image/png';
+    res.set('Content-Type', contentType);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.send(buffer);
+  } catch (err) {
+    res.status(500).send('Proxy error: ' + err.message);
   }
 });
 

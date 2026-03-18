@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import FeatureScopeForm from './FeatureScopeForm';
 import EditFeatureTab from './EditFeatureTab';
+import CompatibilityAdmin from './CompatibilityAdmin';
 
 function AdminPage() {
   const [activeTab, setActiveTab] = useState('add');
@@ -26,6 +27,12 @@ function AdminPage() {
           >
             Edit Feature
           </button>
+          <button
+            className={`admin-tab ${activeTab === 'compatibility' ? 'active' : ''}`}
+            onClick={() => setActiveTab('compatibility')}
+          >
+            Compatibility
+          </button>
         </div>
 
         {activeTab === 'add' && (
@@ -34,6 +41,10 @@ function AdminPage() {
 
         {activeTab === 'edit' && (
           <EditFeatureTab refreshKey={refreshKey} onChanged={handleSaved} />
+        )}
+
+        {activeTab === 'compatibility' && (
+          <CompatibilityAdmin onChanged={handleSaved} />
         )}
       </div>
     </div>

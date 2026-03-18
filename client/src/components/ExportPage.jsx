@@ -2,7 +2,7 @@ import { useState, useRef } from 'react';
 import html2pdf from 'html2pdf.js';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import { saveAs } from 'file-saver';
-import { PRODUCT_TYPES, COMBINATIONS_BY_PRODUCT } from '../constants';
+import { useProductConfig } from '../ProductConfigContext';
 
 function getExportFilename(productType, combination, ext) {
   const now = new Date();
@@ -58,6 +58,7 @@ function buildDocxChildren(productType, combination, scopeLabel, features) {
 }
 
 function ExportPage({ onBack }) {
+  const { productTypes, combinationsByProduct } = useProductConfig();
   const [scope, setScope] = useState('');
   const [productType, setProductType] = useState('');
   const [combination, setCombination] = useState('');
@@ -68,7 +69,7 @@ function ExportPage({ onBack }) {
   const [loadingPreview, setLoadingPreview] = useState(false);
   const printRef = useRef(null);
 
-  const combinations = productType ? (COMBINATIONS_BY_PRODUCT[productType] || []) : [];
+  const combinations = productType ? (combinationsByProduct[productType] || []) : [];
   const ready = scope && productType && (combinations.length === 0 || combination);
   const scopeLabel = scope === 'inscope' ? 'In Scope' : 'Out of Scope';
 
@@ -196,7 +197,7 @@ function ExportPage({ onBack }) {
               <label>Product Type <span className="required">*</span></label>
               <select value={productType} onChange={(e) => { setProductType(e.target.value); setCombination(''); resetPreview(); }}>
                 <option value="">-- Select Product Type --</option>
-                {PRODUCT_TYPES.map(pt => <option key={pt} value={pt}>{pt}</option>)}
+                {productTypes.map(pt => <option key={pt} value={pt}>{pt}</option>)}
               </select>
             </div>
           </div>

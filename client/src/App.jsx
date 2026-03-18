@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useSearchParams } from 'react-router-dom';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import FeatureTable from './components/FeatureTable';
+import CompatibilityTable from './components/CompatibilityTable';
 import AdminPage from './components/AdminPage';
-import ExportPage from './components/ExportPage';
 import AdminLogin from './components/AdminLogin';
 
 function AdminRoute({ darkMode, setDarkMode }) {
@@ -66,9 +66,20 @@ function AdminRoute({ darkMode, setDarkMode }) {
   );
 }
 
+function MainContent() {
+  const [searchParams] = useSearchParams();
+  const view = searchParams.get('view') || '';
+  const matrixSlug = searchParams.get('matrix') || '';
+
+  if (view === 'compatibility' && matrixSlug) {
+    return <CompatibilityTable matrixSlug={matrixSlug} />;
+  }
+
+  return <FeatureTable />;
+}
+
 function App() {
   const [darkMode, setDarkMode] = useState(false);
-  const [showExport, setShowExport] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
@@ -87,13 +98,9 @@ function App() {
             <>
               <Header darkMode={darkMode} onToggleDark={() => setDarkMode(!darkMode)} isAdmin={false} />
               <div className="app-body">
-                <Sidebar onShowExport={setShowExport} showingExport={showExport} />
+                <Sidebar />
                 <main className="main-content">
-                  {showExport ? (
-                    <ExportPage onBack={() => setShowExport(false)} />
-                  ) : (
-                    <FeatureTable />
-                  )}
+                  <MainContent />
                 </main>
               </div>
             </>

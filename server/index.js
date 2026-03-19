@@ -11,12 +11,14 @@ const Feature = require('./models/Feature');
 const Category = require('./models/Category');
 const CompatibilityMatrix = require('./models/CompatibilityMatrix');
 const ProductConfig = require('./models/ProductConfig');
+const CloudInfo = require('./models/CloudInfo');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // --------------- Admin Auth ---------------
 
@@ -213,7 +215,7 @@ app.post('/api/categories', async (req, res) => {
 
 app.get('/api/product-config', async (req, res) => {
   try {
-    const configs = await ProductConfig.find().sort({ order: 1 }).lean();
+    const configs = await ProductConfig.find({ isDeleted: { $ne: true } }).sort({ order: 1 }).lean();
     res.json({
       productTypes: configs.map(c => c.name),
       combinationsByProduct: configs.reduce((acc, c) => { acc[c.name] = c.combinations; return acc; }, {}),
@@ -300,7 +302,7 @@ app.post('/api/product-config/:id/combinations', async (req, res) => {
 
 app.delete('/api/product-config/:id', async (req, res) => {
   try {
-    const config = await ProductConfig.findByIdAndDelete(req.params.id);
+    const config = await ProductConfig.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!config) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (err) {
@@ -325,10 +327,10 @@ app.delete('/api/features/by-scope', async (req, res) => {
   try {
     const { productType, scope, combination } = req.query;
     if (!productType || !scope) return res.status(400).json({ error: 'productType and scope are required' });
-    const filter = { productType, scope };
+    const filter = { productType, scope, isDeleted: { $ne: true } };
     if (combination) filter.combination = combination;
-    const result = await Feature.deleteMany(filter);
-    res.json({ success: true, deletedCount: result.deletedCount });
+    const result = await Feature.updateMany(filter, { isDeleted: true, deletedAt: new Date() });
+    res.json({ success: true, deletedCount: result.modifiedCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -355,7 +357,7 @@ function mapFeature(f) {
 app.get('/api/features', async (req, res) => {
   try {
     const { category, productType, scope, combination, search, tag } = req.query;
-    const filter = {};
+    const filter = { isDeleted: { $ne: true } };
 
     const pt = productType || category;
     if (pt) filter.productType = pt;
@@ -373,7 +375,7 @@ app.get('/api/features', async (req, res) => {
 
     const features = await Feature.find(filter).sort({ order: 1, createdAt: -1 }).lean();
 
-    const tagFilter = {};
+    const tagFilter = { isDeleted: { $ne: true } };
     if (pt) tagFilter.productType = pt;
     if (scope) tagFilter.scope = scope;
     if (combination) tagFilter.combination = combination;
@@ -492,23 +494,8 @@ app.put('/api/features/:id', async (req, res) => {
 
 app.delete('/api/features/:id', async (req, res) => {
   try {
-    const feature = await Feature.findById(req.params.id).lean();
+    const feature = await Feature.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!feature) return res.status(404).json({ error: 'Feature not found' });
-
-    if (useCloudinary) {
-      const { v2: cloudinary } = require('cloudinary');
-      for (const url of (feature.screenshots || [])) {
-        if (url.includes('cloudinary.com')) {
-          const parts = url.split('/');
-          const filenameWithExt = parts.pop();
-          const folder = parts.pop();
-          const publicId = `${folder}/${filenameWithExt.split('.')[0]}`;
-          await cloudinary.uploader.destroy(publicId).catch(() => {});
-        }
-      }
-    }
-
-    await Feature.findByIdAndDelete(req.params.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -540,7 +527,7 @@ function slugify(text) {
 
 app.get('/api/compatibility', async (req, res) => {
   try {
-    const matrices = await CompatibilityMatrix.find()
+    const matrices = await CompatibilityMatrix.find({ isDeleted: { $ne: true } })
       .select('name slug order')
       .sort({ order: 1, createdAt: 1 })
       .lean();
@@ -552,7 +539,7 @@ app.get('/api/compatibility', async (req, res) => {
 
 app.get('/api/compatibility/:slug', async (req, res) => {
   try {
-    const matrix = await CompatibilityMatrix.findOne({ slug: req.params.slug }).lean();
+    const matrix = await CompatibilityMatrix.findOne({ slug: req.params.slug, isDeleted: { $ne: true } }).lean();
     if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
     res.json({ matrix: { ...matrix, id: matrix._id.toString() } });
   } catch (err) {
@@ -599,10 +586,180 @@ app.put('/api/compatibility/:id', async (req, res) => {
   }
 });
 
+app.put('/api/compatibility/reorder', async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
+    const ops = orderedIds.map((id, idx) => ({
+      updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
+    }));
+    await CompatibilityMatrix.bulkWrite(ops);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete('/api/compatibility/:id', async (req, res) => {
   try {
-    const matrix = await CompatibilityMatrix.findByIdAndDelete(req.params.id);
+    const matrix = await CompatibilityMatrix.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --------------- Cloud Info ---------------
+
+function slugifyCloudInfo(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+app.get('/api/cloud-info', async (req, res) => {
+  try {
+    const items = await CloudInfo.find({ isDeleted: { $ne: true } }).sort({ order: 1, createdAt: 1 }).lean();
+    res.json({ items: items.map(i => ({ ...i, id: i._id.toString() })) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/cloud-info/:slug', async (req, res) => {
+  try {
+    const item = await CloudInfo.findOne({ slug: req.params.slug, isDeleted: { $ne: true } }).lean();
+    if (!item) return res.status(404).json({ error: 'Not found' });
+    res.json({ item: { ...item, id: item._id.toString() } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/cloud-info', async (req, res) => {
+  try {
+    const { name, content } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+    let slug = slugifyCloudInfo(name);
+    const existing = await CloudInfo.findOne({ slug }).lean();
+    if (existing) slug = slug + '-' + Date.now();
+    const count = await CloudInfo.countDocuments();
+    const item = await CloudInfo.create({ name, slug, content: content || '', order: count });
+    res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/cloud-info/:id', async (req, res) => {
+  try {
+    const { name, content } = req.body;
+    const update = {};
+    if (name !== undefined) {
+      update.name = name;
+      update.slug = slugifyCloudInfo(name);
+      const existing = await CloudInfo.findOne({ slug: update.slug, _id: { $ne: req.params.id } }).lean();
+      if (existing) update.slug = update.slug + '-' + Date.now();
+    }
+    if (content !== undefined) update.content = content;
+    const item = await CloudInfo.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
+    if (!item) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true, item: { ...item, id: item._id.toString() } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/cloud-info/:id', async (req, res) => {
+  try {
+    const item = await CloudInfo.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
+    if (!item) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/cloud-info-reorder', async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
+    const ops = orderedIds.map((id, idx) => ({
+      updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
+    }));
+    await CloudInfo.bulkWrite(ops);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --------------- Trash Management ---------------
+
+app.get('/api/trash', async (req, res) => {
+  try {
+    const [features, productConfigs, matrices, cloudInfos] = await Promise.all([
+      Feature.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
+      ProductConfig.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
+      CompatibilityMatrix.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
+      CloudInfo.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
+    ]);
+    res.json({
+      features: features.map(f => ({ ...mapFeature(f), deletedAt: f.deletedAt })),
+      productConfigs: productConfigs.map(c => ({ id: c._id.toString(), name: c.name, combinations: c.combinations, deletedAt: c.deletedAt })),
+      matrices: matrices.map(m => ({ id: m._id.toString(), name: m.name, slug: m.slug, deletedAt: m.deletedAt })),
+      cloudInfos: cloudInfos.map(i => ({ id: i._id.toString(), name: i.name, slug: i.slug, deletedAt: i.deletedAt })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/trash/restore/:type/:id', async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    let Model;
+    if (type === 'feature') Model = Feature;
+    else if (type === 'productConfig') Model = ProductConfig;
+    else if (type === 'compatibility') Model = CompatibilityMatrix;
+    else if (type === 'cloudInfo') Model = CloudInfo;
+    else return res.status(400).json({ error: 'Invalid type' });
+
+    const doc = await Model.findByIdAndUpdate(id, { isDeleted: false, deletedAt: null }, { new: true });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/trash/permanent/:type/:id', async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    let Model;
+    if (type === 'feature') Model = Feature;
+    else if (type === 'productConfig') Model = ProductConfig;
+    else if (type === 'compatibility') Model = CompatibilityMatrix;
+    else if (type === 'cloudInfo') Model = CloudInfo;
+    else return res.status(400).json({ error: 'Invalid type' });
+
+    const doc = await Model.findById(id);
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    if (!doc.isDeleted) return res.status(400).json({ error: 'Item is not in trash' });
+
+    if (type === 'feature' && useCloudinary) {
+      const { v2: cloudinary } = require('cloudinary');
+      for (const url of (doc.screenshots || [])) {
+        if (url.includes('cloudinary.com')) {
+          const parts = url.split('/');
+          const filenameWithExt = parts.pop();
+          const folder = parts.pop();
+          const publicId = `${folder}/${filenameWithExt.split('.')[0]}`;
+          await cloudinary.uploader.destroy(publicId).catch(() => {});
+        }
+      }
+    }
+
+    await Model.findByIdAndDelete(id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

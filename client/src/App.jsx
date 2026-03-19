@@ -4,6 +4,7 @@ import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import FeatureTable from './components/FeatureTable';
 import CompatibilityTable from './components/CompatibilityTable';
+import CloudInfoPage from './components/CloudInfoPage';
 import AdminPage from './components/AdminPage';
 import AdminLogin from './components/AdminLogin';
 
@@ -70,9 +71,14 @@ function MainContent() {
   const [searchParams] = useSearchParams();
   const view = searchParams.get('view') || '';
   const matrixSlug = searchParams.get('matrix') || '';
+  const infoSlug = searchParams.get('info') || '';
 
   if (view === 'compatibility' && matrixSlug) {
     return <CompatibilityTable matrixSlug={matrixSlug} />;
+  }
+
+  if (view === 'cloudinfo' && infoSlug) {
+    return <CloudInfoPage slug={infoSlug} />;
   }
 
   return <FeatureTable />;

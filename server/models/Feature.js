@@ -9,6 +9,8 @@ const featureSchema = new mongoose.Schema({
   family: { type: String, default: '' },
   screenshots: [{ type: String }],
   order: { type: Number, default: 0 },
+  isDeleted: { type: Boolean, default: false },
+  deletedAt: { type: Date, default: null },
 }, {
   timestamps: true,
 });

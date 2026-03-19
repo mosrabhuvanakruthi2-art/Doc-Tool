@@ -2,6 +2,8 @@ import { useState } from 'react';
 import FeatureScopeForm from './FeatureScopeForm';
 import EditFeatureTab from './EditFeatureTab';
 import CompatibilityAdmin from './CompatibilityAdmin';
+import CloudInfoAdmin from './CloudInfoAdmin';
+import TrashAdmin from './TrashAdmin';
 
 function AdminPage() {
   const [activeTab, setActiveTab] = useState('add');
@@ -33,6 +35,18 @@ function AdminPage() {
           >
             Compatibility
           </button>
+          <button
+            className={`admin-tab ${activeTab === 'cloudinfo' ? 'active' : ''}`}
+            onClick={() => setActiveTab('cloudinfo')}
+          >
+            Cloud Info
+          </button>
+          <button
+            className={`admin-tab admin-tab-trash ${activeTab === 'trash' ? 'active' : ''}`}
+            onClick={() => setActiveTab('trash')}
+          >
+            Trash
+          </button>
         </div>
 
         {activeTab === 'add' && (
@@ -45,6 +59,14 @@ function AdminPage() {
 
         {activeTab === 'compatibility' && (
           <CompatibilityAdmin onChanged={handleSaved} />
+        )}
+
+        {activeTab === 'cloudinfo' && (
+          <CloudInfoAdmin onChanged={handleSaved} />
+        )}
+
+        {activeTab === 'trash' && (
+          <TrashAdmin onChanged={handleSaved} />
         )}
       </div>
     </div>

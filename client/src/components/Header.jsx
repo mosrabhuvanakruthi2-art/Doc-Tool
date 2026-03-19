@@ -20,20 +20,22 @@ function Header({ darkMode, onToggleDark, isAdmin, onLogout }) {
 
       {!isAdmin && (
         <div className="header-center">
-          <div className="section-toggle">
-            <button
-              className={`toggle-btn ${section === 'inscope' ? 'active' : ''}`}
-              onClick={() => handleSectionToggle('inscope')}
-            >
-              Inscope
-            </button>
-            <button
-              className={`toggle-btn ${section === 'outscope' ? 'active' : ''}`}
-              onClick={() => handleSectionToggle('outscope')}
-            >
-              Outscope
-            </button>
-          </div>
+          {!searchParams.get('view') && searchParams.get('product') && (
+            <div className="section-toggle">
+              <button
+                className={`toggle-btn ${section === 'inscope' ? 'active' : ''}`}
+                onClick={() => handleSectionToggle('inscope')}
+              >
+                Inscope
+              </button>
+              <button
+                className={`toggle-btn ${section === 'outscope' ? 'active' : ''}`}
+                onClick={() => handleSectionToggle('outscope')}
+              >
+                Outscope
+              </button>
+            </div>
+          )}
         </div>
       )}
 

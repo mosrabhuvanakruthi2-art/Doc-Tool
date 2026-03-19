@@ -39,6 +39,12 @@ const COMPAT_ICON = (
   </svg>
 );
 
+const CLOUD_INFO_ICON = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+  </svg>
+);
+
 function Sidebar() {
   const { productTypes, combinationsByProduct } = useProductConfig();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -47,7 +53,9 @@ function Sidebar() {
   const activeView = searchParams.get('view') || '';
   const [expandedProduct, setExpandedProduct] = useState('');
   const [compatExpanded, setCompatExpanded] = useState(false);
+  const [cloudInfoExpanded, setCloudInfoExpanded] = useState(false);
   const [compatMatrices, setCompatMatrices] = useState([]);
+  const [cloudInfoItems, setCloudInfoItems] = useState([]);
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [isDragging, setIsDragging] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -57,6 +65,10 @@ function Sidebar() {
     fetch('/api/compatibility')
       .then(res => res.json())
       .then(data => setCompatMatrices(data.matrices || []))
+      .catch(() => {});
+    fetch('/api/cloud-info')
+      .then(res => res.json())
+      .then(data => setCloudInfoItems(data.items || []))
       .catch(() => {});
   }, []);
 
@@ -74,16 +86,20 @@ function Sidebar() {
     } else {
       setExpandedProduct(slug);
       setCompatExpanded(false);
+      setCloudInfoExpanded(false);
       const params = new URLSearchParams();
       setSearchParams(params);
     }
   };
 
   const handleCombinationClick = (product, combo) => {
+    setCompatExpanded(false);
+    setCloudInfoExpanded(false);
     const params = new URLSearchParams(searchParams);
     params.set('product', product);
     params.delete('view');
     params.delete('matrix');
+    params.delete('info');
     if (activeCombination === combo && searchParams.get('product') === product) {
       params.delete('combination');
     } else {
@@ -97,14 +113,40 @@ function Sidebar() {
       setCollapsed(false);
       return;
     }
+    const wasExpanded = compatExpanded;
     setCompatExpanded(prev => !prev);
     setExpandedProduct('');
+    setCloudInfoExpanded(false);
+    if (wasExpanded) {
+      setSearchParams(new URLSearchParams());
+    }
   };
 
   const handleMatrixClick = (slug) => {
     const params = new URLSearchParams();
     params.set('view', 'compatibility');
     params.set('matrix', slug);
+    setSearchParams(params);
+  };
+
+  const handleCloudInfoToggle = () => {
+    if (collapsed) {
+      setCollapsed(false);
+      return;
+    }
+    const wasExpanded = cloudInfoExpanded;
+    setCloudInfoExpanded(prev => !prev);
+    setExpandedProduct('');
+    setCompatExpanded(false);
+    if (wasExpanded) {
+      setSearchParams(new URLSearchParams());
+    }
+  };
+
+  const handleCloudInfoClick = (slug) => {
+    const params = new URLSearchParams();
+    params.set('view', 'cloudinfo');
+    params.set('info', slug);
     setSearchParams(params);
   };
 
@@ -251,6 +293,48 @@ function Sidebar() {
                 </ul>
               </div>
             )}
+
+            {/* Cloud Info dropdown section — no gap */}
+            {cloudInfoItems.length > 0 && (
+              <div className="sidebar-nav-section">
+                <div className="sidebar-nav-header">
+                  <span className="sidebar-nav-label">Cloud Info</span>
+                </div>
+                <ul className="sidebar-items">
+                  <li>
+                    <button
+                      className={`sidebar-product-btn ${cloudInfoExpanded ? 'active' : ''}`}
+                      onClick={handleCloudInfoToggle}
+                    >
+                      <span className="sidebar-product-icon-label">
+                        {CLOUD_INFO_ICON}
+                        <span>Cloud Info</span>
+                      </span>
+                      <svg
+                        className={`sidebar-product-icon ${cloudInfoExpanded ? 'expanded' : ''}`}
+                        width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                      >
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                    </button>
+                    {cloudInfoExpanded && (
+                      <ul className="sidebar-combos">
+                        {cloudInfoItems.map(item => (
+                          <li key={item._id}>
+                            <button
+                              className={`sidebar-combo-btn ${activeView === 'cloudinfo' && searchParams.get('info') === item.slug ? 'active' : ''}`}
+                              onClick={() => handleCloudInfoClick(item.slug)}
+                            >
+                              {item.name}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                </ul>
+              </div>
+            )}
           </>
         )}
 
@@ -278,6 +362,19 @@ function Sidebar() {
                 >
                   <span className="sidebar-product-icon-label">
                     {COMPAT_ICON}
+                  </span>
+                </button>
+              </li>
+            )}
+            {cloudInfoItems.length > 0 && (
+              <li>
+                <button
+                  className="sidebar-product-btn"
+                  onClick={() => setCollapsed(false)}
+                  title="Cloud Info"
+                >
+                  <span className="sidebar-product-icon-label">
+                    {CLOUD_INFO_ICON}
                   </span>
                 </button>
               </li>

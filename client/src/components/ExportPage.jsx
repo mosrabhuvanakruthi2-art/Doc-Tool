@@ -3,6 +3,7 @@ import html2pdf from 'html2pdf.js';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import { saveAs } from 'file-saver';
 import { useProductConfig } from '../ProductConfigContext';
+import CustomSelect from './CustomSelect';
 
 function getExportFilename(productType, combination, ext) {
   const now = new Date();
@@ -183,11 +184,15 @@ function ExportPage({ onBack }) {
         <div className="form-section">
           <div className="form-group">
             <label>Scope <span className="required">*</span></label>
-            <select value={scope} onChange={(e) => { setScope(e.target.value); resetPreview(); }}>
-              <option value="">-- Select Scope --</option>
-              <option value="inscope">In Scope</option>
-              <option value="outscope">Out of Scope</option>
-            </select>
+            <CustomSelect
+              value={scope}
+              onChange={(e) => { setScope(e.target.value); resetPreview(); }}
+              options={[
+                { value: 'inscope', label: 'In Scope' },
+                { value: 'outscope', label: 'Out of Scope' },
+              ]}
+              placeholder="-- Select Scope --"
+            />
           </div>
         </div>
 
@@ -195,10 +200,12 @@ function ExportPage({ onBack }) {
           <div className="form-section">
             <div className="form-group">
               <label>Product Type <span className="required">*</span></label>
-              <select value={productType} onChange={(e) => { setProductType(e.target.value); setCombination(''); resetPreview(); }}>
-                <option value="">-- Select Product Type --</option>
-                {productTypes.map(pt => <option key={pt} value={pt}>{pt}</option>)}
-              </select>
+              <CustomSelect
+                value={productType}
+                onChange={(e) => { setProductType(e.target.value); setCombination(''); resetPreview(); }}
+                options={productTypes.map(pt => ({ value: pt, label: pt }))}
+                placeholder="-- Select Product Type --"
+              />
             </div>
           </div>
         )}
@@ -207,10 +214,12 @@ function ExportPage({ onBack }) {
           <div className="form-section">
             <div className="form-group">
               <label>Combination <span className="required">*</span></label>
-              <select value={combination} onChange={(e) => { setCombination(e.target.value); resetPreview(); }}>
-                <option value="">-- Select Combination --</option>
-                {combinations.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+              <CustomSelect
+                value={combination}
+                onChange={(e) => { setCombination(e.target.value); resetPreview(); }}
+                options={combinations.map(c => ({ value: c, label: c }))}
+                placeholder="-- Select Combination --"
+              />
             </div>
           </div>
         )}

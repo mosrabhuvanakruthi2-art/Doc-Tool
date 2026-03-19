@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import FeatureCard from './FeatureCard';
 import { useProductConfig } from '../ProductConfigContext';
+import CustomSelect from './CustomSelect';
 
 const emptyFeature = () => ({
   name: '',
@@ -31,6 +32,30 @@ function FeatureScopeForm({ onSaved }) {
   const [savingCombo, setSavingCombo] = useState(false);
 
   const combinations = productType ? (combinationsByProduct[productType] || []) : [];
+
+  const ptSectionRef = useRef(null);
+  const comboSectionRef = useRef(null);
+  const featuresSectionRef = useRef(null);
+
+  useEffect(() => {
+    if (scope && ptSectionRef.current) {
+      ptSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [scope]);
+
+  useEffect(() => {
+    if (productType && comboSectionRef.current) {
+      comboSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [productType]);
+
+  useEffect(() => {
+    if (productType && featuresSectionRef.current) {
+      setTimeout(() => {
+        featuresSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
+    }
+  }, [combination]);
 
   const handleFeatureChange = (index, updated) => {
     setFeatures(prev => prev.map((f, i) => (i === index ? updated : f)));
@@ -181,31 +206,29 @@ function FeatureScopeForm({ onSaved }) {
       <div className="form-section">
         <div className="form-group">
           <label>Scope Status <span className="required">*</span></label>
-          <select
+          <CustomSelect
             value={scope}
             onChange={(e) => { setScope(e.target.value); setSuccess(''); }}
-          >
-            <option value="">-- Select Scope --</option>
-            <option value="inscope">In Scope</option>
-            <option value="outscope">Out of Scope</option>
-          </select>
+            options={[
+              { value: 'inscope', label: 'In Scope' },
+              { value: 'outscope', label: 'Out of Scope' },
+            ]}
+            placeholder="-- Select Scope --"
+          />
         </div>
       </div>
 
       {scope && (
-        <div className="form-section">
+        <div className="form-section" ref={ptSectionRef}>
           <div className="form-group">
             <label>Product Type <span className="required">*</span></label>
             <div className="select-with-action">
-              <select
+              <CustomSelect
                 value={productType}
                 onChange={(e) => { setProductType(e.target.value); setCombination(''); setSuccess(''); cancelNewPT(); }}
-              >
-                <option value="">-- Select Product Type --</option>
-                {productTypes.map(pt => (
-                  <option key={pt} value={pt}>{pt}</option>
-                ))}
-              </select>
+                options={productTypes.map(pt => ({ value: pt, label: pt }))}
+                placeholder="-- Select Product Type --"
+              />
               {!showNewPT && (
                 <button className="btn-create-new" onClick={() => setShowNewPT(true)} title="Create new product type">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -236,19 +259,16 @@ function FeatureScopeForm({ onSaved }) {
       )}
 
       {scope && productType && (
-        <div className="form-section">
+        <div className="form-section" ref={comboSectionRef}>
           <div className="form-group">
             <label>Combination</label>
             <div className="select-with-action">
-              <select
+              <CustomSelect
                 value={combination}
                 onChange={(e) => { setCombination(e.target.value); setSuccess(''); cancelNewCombo(); }}
-              >
-                <option value="">-- Select Combination --</option>
-                {combinations.map(c => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
+                options={combinations.map(c => ({ value: c, label: c }))}
+                placeholder="-- Select Combination --"
+              />
               {!showNewCombo && (
                 <button className="btn-create-new" onClick={() => setShowNewCombo(true)} title="Create new combination">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -279,7 +299,7 @@ function FeatureScopeForm({ onSaved }) {
       )}
 
       {scope && productType && (
-        <>
+        <div ref={featuresSectionRef}>
           <div className="form-section-header">
             <span className="scope-badge" data-scope={scope}>
               {scope === 'inscope' ? 'In Scope' : 'Out of Scope'}
@@ -321,7 +341,7 @@ function FeatureScopeForm({ onSaved }) {
               Reset
             </button>
           </div>
-        </>
+        </div>
       )}
     </div>
   );

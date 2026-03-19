@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
+import CustomSelect from './CustomSelect';
 
 function CompatibilityAdmin({ onChanged }) {
   const [matrices, setMatrices] = useState([]);
@@ -20,10 +21,19 @@ function CompatibilityAdmin({ onChanged }) {
   const [importMode, setImportMode] = useState('none');
   const [parsedPreview, setParsedPreview] = useState(null);
   const fileInputRef = useRef(null);
+  const editorRef = useRef(null);
+  const matrixDragItem = useRef(null);
+  const matrixDragOver = useRef(null);
 
   useEffect(() => {
     fetchMatrices();
   }, []);
+
+  useEffect(() => {
+    if ((mode === 'create' || mode === 'edit') && editorRef.current) {
+      editorRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [mode]);
 
   const fetchMatrices = async () => {
     try {
@@ -258,6 +268,32 @@ function CompatibilityAdmin({ onChanged }) {
     setSaving(false);
   };
 
+  const handleMatrixDragEnd = async () => {
+    const from = matrixDragItem.current;
+    const to = matrixDragOver.current;
+    matrixDragItem.current = null;
+    matrixDragOver.current = null;
+    if (from === null || to === null || from === to) return;
+    const reordered = [...matrices];
+    const [moved] = reordered.splice(from, 1);
+    reordered.splice(to, 0, moved);
+    setMatrices(reordered);
+    try {
+      const orderedIds = reordered.map(m => m._id);
+      await fetch('/api/compatibility/reorder', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderedIds }),
+      });
+      setSuccessMsg('Matrix order updated.');
+      setTimeout(() => setSuccessMsg(''), 2000);
+      if (onChanged) onChanged();
+    } catch (err) {
+      setError('Reorder failed: ' + err.message);
+      fetchMatrices();
+    }
+  };
+
   const handleDelete = async () => {
     if (!selectedId) return;
     try {
@@ -285,17 +321,33 @@ function CompatibilityAdmin({ onChanged }) {
           <div className="form-section">
             <div className="form-group">
               <label>Select an existing matrix to edit</label>
-              <select
+              <CustomSelect
                 value=""
                 onChange={(e) => { if (e.target.value) loadMatrix(e.target.value); }}
-              >
-                <option value="">-- Select Matrix --</option>
-                {matrices.map(m => (
-                  <option key={m._id} value={m._id}>{m.name}</option>
-                ))}
-              </select>
+                options={matrices.map(m => ({ value: m._id, label: m.name }))}
+                placeholder="-- Select Matrix --"
+              />
             </div>
           </div>
+          {matrices.length > 1 && (
+            <div className="reorder-list">
+              <label className="reorder-label">Matrix Order <span className="drag-hint-inline">(drag to reorder)</span></label>
+              {matrices.map((m, idx) => (
+                <div
+                  key={m._id}
+                  className="reorder-item"
+                  draggable
+                  onDragStart={() => { matrixDragItem.current = idx; }}
+                  onDragEnter={() => { matrixDragOver.current = idx; }}
+                  onDragOver={e => e.preventDefault()}
+                  onDragEnd={handleMatrixDragEnd}
+                >
+                  <span className="drag-dots reorder-drag-handle">⠿</span>
+                  <span className="reorder-item-name">{idx + 1}. {m.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="form-actions" style={{ marginTop: 16 }}>
             <button className="btn-save" onClick={startNew}>Create New Matrix</button>
           </div>
@@ -303,7 +355,7 @@ function CompatibilityAdmin({ onChanged }) {
       )}
 
       {(mode === 'create' || mode === 'edit') && (
-        <>
+        <div ref={editorRef}>
           <div className="compat-admin-toolbar">
             <button className="btn-secondary" onClick={() => { resetForm(); setMode('select'); }}>
               Back to List
@@ -599,7 +651,7 @@ function CompatibilityAdmin({ onChanged }) {
               </>
             )}
           </div>
-        </>
+        </div>
       )}
     </div>
   );

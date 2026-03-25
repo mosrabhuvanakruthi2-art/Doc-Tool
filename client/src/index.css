@@ -1485,6 +1485,18 @@ a:hover { text-decoration: underline; }
   gap: 16px;
 }
 
+.feature-card-body .input-error {
+  border-color: var(--danger, #c62828) !important;
+  box-shadow: 0 0 0 1px rgba(198, 40, 40, 0.2);
+}
+
+.feature-card-body .field-error-text {
+  color: var(--danger, #c62828);
+  font-size: 0.8125rem;
+  margin: 4px 0 0;
+  line-height: 1.35;
+}
+
 /* ============ SCREENSHOT UPLOAD (FORM) ============ */
 .screenshot-upload-area {
   display: flex;

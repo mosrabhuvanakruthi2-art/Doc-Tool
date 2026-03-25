@@ -1,6 +1,6 @@
 import { useRef, useEffect } from 'react';
 
-function FeatureCard({ feature, index, onChange, onRemove, showRemove }) {
+function FeatureCard({ feature, index, onChange, onRemove, showRemove, nameError }) {
   const fileInputRef = useRef(null);
   const cardRef = useRef(null);
 
@@ -99,11 +99,19 @@ function FeatureCard({ feature, index, onChange, onRemove, showRemove }) {
           <label>Feature Name <span className="required">*</span></label>
           <input
             type="text"
+            className={nameError ? 'input-error' : ''}
             placeholder="e.g. One Time Migration"
             value={feature.name || ''}
             onChange={(e) => handleFieldChange('name', e.target.value)}
             required
+            aria-invalid={nameError ? 'true' : 'false'}
+            aria-describedby={nameError ? `feature-name-error-${index}` : undefined}
           />
+          {nameError ? (
+            <p id={`feature-name-error-${index}`} className="field-error-text" role="alert">
+              {nameError}
+            </p>
+          ) : null}
         </div>
 
         <div className="form-group">

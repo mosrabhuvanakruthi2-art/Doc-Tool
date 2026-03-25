@@ -4,6 +4,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const mongoose = require('mongoose');
+const dns = require('dns');
 const multer = require('multer');
 const jwt = require('jsonwebtoken');
 
@@ -50,9 +51,40 @@ app.get('/api/admin/verify', (req, res) => {
 
 // --------------- MongoDB Connection ---------------
 
-mongoose.connect(process.env.MONGODB_URI)
+const mongoConnectOpts = { serverSelectionTimeoutMS: 15000 };
+
+function applyMongoDnsServers() {
+  const raw = process.env.MONGODB_DNS_SERVERS;
+  if (raw) {
+    dns.setServers(raw.split(',').map((s) => s.trim()).filter(Boolean));
+    return true;
+  }
+  return false;
+}
+
+function connectMongoOnce() {
+  return mongoose.connect(process.env.MONGODB_URI, mongoConnectOpts);
+}
+
+if (process.env.MONGODB_DNS_SERVERS) {
+  applyMongoDnsServers();
+}
+
+connectMongoOnce()
+  .catch((err) => {
+    const msg = String(err.message);
+    const uri = process.env.MONGODB_URI || '';
+    const isSrv = uri.startsWith('mongodb+srv://');
+    const skipRetry = process.env.MONGODB_SKIP_PUBLIC_DNS_RETRY === '1';
+    if (msg.includes('querySrv') && isSrv && !skipRetry && !process.env.MONGODB_DNS_SERVERS) {
+      console.warn('SRV DNS failed on default resolver; retrying with 8.8.8.8 / 1.1.1.1…');
+      dns.setServers(['8.8.8.8', '1.1.1.1']);
+      return mongoose.disconnect().catch(() => {}).then(() => connectMongoOnce());
+    }
+    throw err;
+  })
   .then(async () => {
-    console.log('Connected to MongoDB Atlas');
+    console.log('Connected to MongoDB');
     const count = await ProductConfig.countDocuments();
     if (count === 0) {
       const seed = [
@@ -64,14 +96,24 @@ mongoose.connect(process.env.MONGODB_URI)
       console.log('Seeded product configurations');
     }
   })
-  .catch(err => {
+  .catch((err) => {
     console.error('MongoDB connection error:', err.message);
+    if (String(err.message).includes('querySrv')) {
+      console.error(`
+SRV DNS lookup failed (often blocked by corporate DNS, VPN, or firewall).
+
+Fix options:
+  • Set MONGODB_DNS_SERVERS=8.8.8.8,1.1.1.1 in server/.env before starting (uses public DNS for SRV).
+  • Local MongoDB: docker compose up -d  then  MONGODB_URI=mongodb://127.0.0.1:27017/docproject
+  • Atlas: use standard mongodb://… connection string instead of mongodb+srv://
+`);
+    }
     process.exit(1);
   });
 
 // --------------- Upload Config (Cloudinary or Local) ---------------
 
-const assetsDir = path.join(__dirname, 'assets');
+const assetsDir = path.join("/var/www/doc360tool/client/dist/", 'assets');
 const screenshotsDir = path.join(assetsDir, 'screenshots');
 [assetsDir, screenshotsDir].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -342,6 +384,10 @@ app.delete('/api/features/by-scope', async (req, res) => {
 
 // --------------- Features ---------------
 
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function mapFeature(f) {
   return {
     id: f._id.toString(),
@@ -377,7 +423,7 @@ app.get('/api/features', async (req, res) => {
       filter.family = tag;
     }
 
-    const features = await Feature.find(filter).sort({ order: 1, createdAt: -1 }).lean();
+    const features = await Feature.find(filter).sort({ order: 1, createdAt: 1 }).lean();
 
     const tagFilter = { isDeleted: { $ne: true } };
     if (pt) tagFilter.productType = pt;
@@ -403,6 +449,18 @@ app.post('/api/features', async (req, res) => {
     if (!pt || !scope || !name) {
       return res.status(400).json({ error: 'productType, scope, and name are required' });
     }
+    const nameTrimmed = String(name).trim();
+    const dup = await Feature.findOne({
+      productType: pt,
+      scope,
+      combination: combination || '',
+      isDeleted: { $ne: true },
+      name: new RegExp(`^${escapeRegex(nameTrimmed)}$`, 'i'),
+    }).lean();
+    if (dup) {
+      return res.status(400).json({ error: 'A feature with this name already exists. Enter a different name.' });
+    }
+
     const maxOrderDoc = await Feature.findOne({ productType: pt, scope, combination: combination || '' })
       .sort({ order: -1 }).lean();
     const nextOrder = maxOrderDoc ? (maxOrderDoc.order || 0) + 1 : 0;
@@ -410,7 +468,7 @@ app.post('/api/features', async (req, res) => {
       productType: pt,
       scope,
       combination: combination || '',
-      name,
+      name: nameTrimmed,
       description: description || '',
       family: family || '',
       screenshots: screenshots || [],
@@ -428,17 +486,64 @@ app.post('/api/features/bulk', async (req, res) => {
     if (!Array.isArray(featureList) || featureList.length === 0) {
       return res.status(400).json({ error: 'features array is required' });
     }
-    const docs = featureList
-      .filter(f => (f.productType || f.categorySlug) && f.scope && f.name)
+    const filtered = featureList
+      .filter(f => (f.productType || f.categorySlug) && f.scope && String(f.name || '').trim())
       .map(f => ({
         productType: f.productType || f.categorySlug,
         scope: f.scope,
         combination: f.combination || '',
-        name: f.name,
+        name: String(f.name).trim(),
         description: f.description || '',
         family: f.family || '',
         screenshots: f.screenshots || [],
       }));
+
+    if (filtered.length === 0) {
+      return res.status(400).json({ error: 'No valid features to save (each needs product type, scope, and name).' });
+    }
+
+    const first = filtered[0];
+    for (const f of filtered) {
+      if (f.productType !== first.productType || f.scope !== first.scope || f.combination !== first.combination) {
+        return res.status(400).json({ error: 'All features in one save must use the same product type, scope, and combination.' });
+      }
+    }
+
+    const seenLower = new Set();
+    for (const f of filtered) {
+      const nl = f.name.toLowerCase();
+      if (seenLower.has(nl)) {
+        return res.status(400).json({ error: 'A feature with this name already exists. Enter a different name.' });
+      }
+      seenLower.add(nl);
+    }
+
+    const comb = first.combination || '';
+    const existingDocs = await Feature.find({
+      productType: first.productType,
+      scope: first.scope,
+      combination: comb,
+      isDeleted: { $ne: true },
+    }).select('name').lean();
+
+    const existingLower = new Set(existingDocs.map((d) => String(d.name || '').trim().toLowerCase()).filter(Boolean));
+    for (const f of filtered) {
+      if (existingLower.has(f.name.toLowerCase())) {
+        return res.status(400).json({ error: 'A feature with this name already exists. Enter a different name.' });
+      }
+    }
+
+    const maxOrderDoc = await Feature.findOne({
+      productType: first.productType,
+      scope: first.scope,
+      combination: comb,
+    }).sort({ order: -1 }).lean();
+    let nextOrder = maxOrderDoc != null ? (maxOrderDoc.order ?? 0) + 1 : 0;
+
+    const docs = filtered.map((f) => ({
+      ...f,
+      order: nextOrder++,
+    }));
 
     const saved = await Feature.insertMany(docs);
     const mapped = saved.map(f => mapFeature(f.toObject()));

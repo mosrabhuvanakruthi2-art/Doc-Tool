@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import FeatureCard from './FeatureCard';
 import { useProductConfig } from '../ProductConfigContext';
 import CustomSelect from './CustomSelect';
 import { showToast } from './Toast';
+
+const DUPLICATE_FEATURE_NAME_MSG = 'This feature already exists. Enter a different name.';
 
 const emptyFeature = () => ({
   name: '',
@@ -30,7 +32,60 @@ function FeatureScopeForm({ onSaved }) {
   const [newComboName, setNewComboName] = useState('');
   const [savingCombo, setSavingCombo] = useState(false);
 
+  const [existingNamesLower, setExistingNamesLower] = useState(() => new Set());
+
   const combinations = productType ? (combinationsByProduct[productType] || []) : [];
+
+  useEffect(() => {
+    if (!productType || !scope) {
+      setExistingNamesLower(new Set());
+      return;
+    }
+    if (combinations.length > 0 && !combination) {
+      setExistingNamesLower(new Set());
+      return;
+    }
+    const params = new URLSearchParams({
+      productType,
+      scope,
+      combination: combination || '',
+    });
+    let cancelled = false;
+    fetch(`/api/features?${params}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const names = new Set(
+          (data.features || [])
+            .map((f) => (f.name || '').trim().toLowerCase())
+            .filter(Boolean),
+        );
+        setExistingNamesLower(names);
+      })
+      .catch(() => {
+        if (!cancelled) setExistingNamesLower(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [productType, scope, combination, combinations.length]);
+
+  const nameErrorsByIndex = useMemo(() => {
+    const errors = {};
+    const countByLower = {};
+    features.forEach((f) => {
+      const n = (f.name || '').trim().toLowerCase();
+      if (!n) return;
+      countByLower[n] = (countByLower[n] || 0) + 1;
+    });
+    features.forEach((f, i) => {
+      const n = (f.name || '').trim().toLowerCase();
+      if (!n) return;
+      if (countByLower[n] > 1) errors[i] = DUPLICATE_FEATURE_NAME_MSG;
+      else if (existingNamesLower.has(n)) errors[i] = DUPLICATE_FEATURE_NAME_MSG;
+    });
+    return errors;
+  }, [features, existingNamesLower]);
 
   const scopeSectionRef = useRef(null);
   const comboSectionRef = useRef(null);
@@ -142,6 +197,11 @@ function FeatureScopeForm({ onSaved }) {
 
     const validFeatures = features.filter(f => f.name.trim());
     if (validFeatures.length === 0) { showToast('Please add at least one feature with a name.', 'error'); return; }
+
+    if (Object.keys(nameErrorsByIndex).length > 0) {
+      showToast(DUPLICATE_FEATURE_NAME_MSG, 'error');
+      return;
+    }
 
     setSaving(true);
 
@@ -315,6 +375,7 @@ function FeatureScopeForm({ onSaved }) {
                 onChange={handleFeatureChange}
                 onRemove={removeFeature}
                 showRemove={features.length > 1}
+                nameError={nameErrorsByIndex[idx] || ''}
               />
             ))}
           </div>

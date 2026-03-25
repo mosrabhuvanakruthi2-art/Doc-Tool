@@ -45,6 +45,8 @@ const CLOUD_INFO_ICON = (
   </svg>
 );
 
+const COMPAT_MATRICES_CHANGED = 'docproject:compat-matrices-changed';
+
 function Sidebar() {
   const { productTypes, combinationsByProduct } = useProductConfig();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -62,14 +64,31 @@ function Sidebar() {
   const sidebarRef = useRef(null);
 
   useEffect(() => {
-    fetch('/api/compatibility')
-      .then(res => res.json())
-      .then(data => setCompatMatrices(data.matrices || []))
-      .catch(() => {});
-    fetch('/api/cloud-info')
-      .then(res => res.json())
-      .then(data => setCloudInfoItems(data.items || []))
-      .catch(() => {});
+    const loadCompat = () => {
+      fetch('/api/compatibility')
+        .then((res) => res.json())
+        .then((data) => setCompatMatrices(data.matrices || []))
+        .catch(() => {});
+    };
+    const loadCloud = () => {
+      fetch('/api/cloud-info')
+        .then((res) => res.json())
+        .then((data) => setCloudInfoItems(data.items || []))
+        .catch(() => {});
+    };
+    loadCompat();
+    loadCloud();
+    const onCompatChanged = () => loadCompat();
+    window.addEventListener(COMPAT_MATRICES_CHANGED, onCompatChanged);
+    const onFocus = () => {
+      loadCompat();
+      loadCloud();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener(COMPAT_MATRICES_CHANGED, onCompatChanged);
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   const handleProductClick = (slug) => {

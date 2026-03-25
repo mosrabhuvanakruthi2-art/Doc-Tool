@@ -3,6 +3,12 @@ import * as XLSX from 'xlsx';
 import CustomSelect from './CustomSelect';
 import { showToast } from './Toast';
 
+const COMPAT_MATRICES_CHANGED = 'docproject:compat-matrices-changed';
+
+function notifyCompatMatricesChanged() {
+  window.dispatchEvent(new CustomEvent(COMPAT_MATRICES_CHANGED));
+}
+
 function CompatibilityAdmin({ onChanged }) {
   const [matrices, setMatrices] = useState([]);
   const [selectedId, setSelectedId] = useState('');
@@ -251,6 +257,7 @@ function CompatibilityAdmin({ onChanged }) {
 
       const msg = mode === 'edit' ? 'Matrix updated successfully!' : 'Matrix created successfully!';
       await fetchMatrices();
+      notifyCompatMatricesChanged();
       if (onChanged) onChanged();
       resetForm();
       setMode('select');
@@ -272,13 +279,18 @@ function CompatibilityAdmin({ onChanged }) {
     reordered.splice(to, 0, moved);
     setMatrices(reordered);
     try {
-      const orderedIds = reordered.map(m => m._id);
-      await fetch('/api/compatibility/reorder', {
+      const orderedIds = reordered.map((m) => String(m._id));
+      const res = await fetch('/api/compatibility/reorder', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ orderedIds }),
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || res.statusText || 'Request failed');
+      }
       showToast('Matrix order updated.');
+      notifyCompatMatricesChanged();
       if (onChanged) onChanged();
     } catch (err) {
       showToast('Reorder failed: ' + err.message, 'error');
@@ -292,6 +304,7 @@ function CompatibilityAdmin({ onChanged }) {
       await fetch(`/api/compatibility/${selectedId}`, { method: 'DELETE' });
       showToast('Matrix deleted.');
       fetchMatrices();
+      notifyCompatMatricesChanged();
       resetForm();
       setMode('select');
       if (onChanged) onChanged();
@@ -335,9 +348,15 @@ function CompatibilityAdmin({ onChanged }) {
                       key={m._id}
                       className="reorder-item"
                       draggable
-                      onDragStart={() => { matrixDragItem.current = idx; }}
-                      onDragEnter={() => { matrixDragOver.current = idx; }}
-                      onDragOver={e => e.preventDefault()}
+                      onDragStart={(e) => {
+                        matrixDragItem.current = idx;
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', String(idx));
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        matrixDragOver.current = idx;
+                      }}
                       onDragEnd={handleMatrixDragEnd}
                     >
                       <span className="drag-dots reorder-drag-handle">⠿</span>

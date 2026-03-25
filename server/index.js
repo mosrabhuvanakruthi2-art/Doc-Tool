@@ -678,6 +678,21 @@ app.post('/api/compatibility', async (req, res) => {
   }
 });
 
+// Must be registered before PUT /api/compatibility/:id so "reorder" is not captured as an id.
+app.put('/api/compatibility/reorder', async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
+    const ops = orderedIds.map((id, idx) => ({
+      updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
+    }));
+    await CompatibilityMatrix.bulkWrite(ops);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.put('/api/compatibility/:id', async (req, res) => {
   try {
     const { name, columns, rows, notes } = req.body;
@@ -694,20 +709,6 @@ app.put('/api/compatibility/:id', async (req, res) => {
     const matrix = await CompatibilityMatrix.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
     res.json({ success: true, matrix: { ...matrix, id: matrix._id.toString() } });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.put('/api/compatibility/reorder', async (req, res) => {
-  try {
-    const { orderedIds } = req.body;
-    if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
-    const ops = orderedIds.map((id, idx) => ({
-      updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
-    }));
-    await CompatibilityMatrix.bulkWrite(ops);
-    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

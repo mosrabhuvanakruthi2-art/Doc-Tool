@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useProductConfig } from '../ProductConfigContext';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, BorderStyle as DocBorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
 import SearchBar from './SearchBar';
 import FilterTags from './FilterTags';
 import DocumentView from './DocumentView';
+import CfLoader from './CfLoader';
 
 function WelcomePage() {
   const [stats, setStats] = useState({ productTypes: 0, combinations: 0, compatibility: 0, cloudInfo: 0 });
@@ -34,7 +36,7 @@ function WelcomePage() {
   if (loading) {
     return (
       <div className="welcome-page">
-        <p style={{ color: 'var(--text-muted)' }}>Loading...</p>
+        <CfLoader />
       </div>
     );
   }
@@ -159,10 +161,12 @@ function getCacheKey(productType, combination, section, search, activeTag) {
 }
 
 function FeatureTable() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const productType = searchParams.get('product') || '';
   const combination = searchParams.get('combination') || '';
   const section = searchParams.get('section') || 'inscope';
+
+  const { productTypes, combinationsByProduct, loading: configLoading } = useProductConfig();
 
   const [features, setFeatures] = useState([]);
   const [tags, setTags] = useState(['All']);
@@ -176,6 +180,20 @@ function FeatureTable() {
   const [downloading, setDownloading] = useState('');
 
   const showWelcome = !productType && !combination;
+
+  useEffect(() => {
+    if (configLoading) return;
+    if (!productType && !combination) return;
+
+    const validProduct = productType && productTypes.includes(productType);
+    const combos = combinationsByProduct[productType] || [];
+    const validCombo = !combination || combos.includes(combination);
+
+    if (!validProduct || !validCombo) {
+      setSearchParams(new URLSearchParams());
+    }
+  }, [productType, combination, productTypes, combinationsByProduct, configLoading, setSearchParams]);
+
 
   useEffect(() => {
     setExpandedRow(null);
@@ -400,7 +418,7 @@ function FeatureTable() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan="5" className="table-loading">Loading...</td>
+                <td colSpan="5"><CfLoader /></td>
               </tr>
             ) : features.length === 0 ? (
               <tr>

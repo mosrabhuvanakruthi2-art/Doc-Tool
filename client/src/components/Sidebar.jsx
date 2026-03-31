@@ -119,11 +119,7 @@ function Sidebar() {
     params.delete('view');
     params.delete('matrix');
     params.delete('info');
-    if (activeCombination === combo && searchParams.get('product') === product) {
-      params.delete('combination');
-    } else {
-      params.set('combination', combo);
-    }
+    params.set('combination', combo);
     setSearchParams(params);
   };
 

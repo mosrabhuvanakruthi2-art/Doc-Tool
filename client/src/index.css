@@ -1497,6 +1497,12 @@ a:hover { text-decoration: underline; }
   line-height: 1.35;
 }
 
+.feature-card-body .screenshot-count-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
 /* ============ SCREENSHOT UPLOAD (FORM) ============ */
 .screenshot-upload-area {
   display: flex;
@@ -3656,6 +3662,13 @@ a:hover { text-decoration: underline; }
   text-decoration: underline;
 }
 
+.cloud-upload-meta {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* Rich text editor toolbar */
 .richtext-toolbar {
   display: flex;
@@ -4049,6 +4062,20 @@ a:hover { text-decoration: underline; }
   max-width: 1000px;
 }
 
+.cloud-info-page.cloud-info-page-full {
+  max-width: none;
+  width: 100%;
+  padding: 20px 20px 28px;
+  box-sizing: border-box;
+}
+
+.cloud-info-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .cloud-info-page-title {
   font-size: 22px;
   font-weight: 600;
@@ -4056,12 +4083,56 @@ a:hover { text-decoration: underline; }
   margin: 0 0 24px 0;
   padding-bottom: 12px;
   border-bottom: 2px solid var(--accent);
+  flex: 1;
 }
 
 .cloud-info-page-content {
   font-size: 14px;
   line-height: 1.8;
   color: var(--text-primary);
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  box-sizing: border-box;
+  overflow-x: auto;
+}
+
+.btn-export-cloud-info {
+  padding: 8px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-family);
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-export-cloud-info:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-export-cloud-info:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.inline-rename-input {
+  width: 280px;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-family);
+  margin: 0 8px 0 0;
 }
 
 .cloud-info-page-content h1 {
@@ -4137,6 +4208,53 @@ a:hover { text-decoration: underline; }
   margin: 12px 0;
   background: var(--bg-secondary);
   border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+/* CloudFuze logo loader */
+.cf-loader {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 900;
+  pointer-events: none;
+}
+
+.cf-loader-ring {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cf-loader-ring::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 4px solid var(--border-color, #e0e0e0);
+  border-top-color: var(--accent, #5b2ea6);
+  animation: cf-spin 1s linear infinite;
+}
+
+.cf-loader-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  object-fit: contain;
+}
+
+@keyframes cf-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@media (max-width: 600px) {
+  .cf-loader-ring { width: 90px; height: 90px; }
+  .cf-loader-logo { width: 48px; height: 48px; }
 }
 
 /* ============ RESPONSIVE: 320px (VERY SMALL) ============ */

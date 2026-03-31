@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import CfLoader from './CfLoader';
 import * as XLSX from 'xlsx';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
@@ -162,7 +163,7 @@ function CompatibilityTable({ matrixSlug }) {
   };
 
   if (loading) {
-    return <div className="compat-loading">Loading compatibility data...</div>;
+    return <CfLoader />;
   }
 
   if (error) {
@@ -224,9 +225,11 @@ function CompatibilityTable({ matrixSlug }) {
                 <td className="compat-td-feature">{row.feature}</td>
                 {columns.map((_, cIdx) => {
                   const val = (row.values && row.values[cIdx]) || '';
+                  const normalized = String(val).trim().toLowerCase();
+                  const isNo = normalized === 'no';
                   return (
                     <td key={cIdx} className="compat-td-cell">
-                      {val}
+                      {isNo ? <strong>No</strong> : val}
                     </td>
                   );
                 })}

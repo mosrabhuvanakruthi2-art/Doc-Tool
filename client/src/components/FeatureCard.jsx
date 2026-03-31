@@ -82,6 +82,7 @@ function FeatureCard({ feature, index, onChange, onRemove, showRemove, nameError
 
   const uploadedScreenshots = feature.screenshots || [];
   const localPreviews = feature._localPreviews || [];
+  const totalScreenshots = uploadedScreenshots.length + localPreviews.length;
 
   return (
     <div className="feature-card" ref={cardRef} tabIndex={-1}>
@@ -136,6 +137,7 @@ function FeatureCard({ feature, index, onChange, onRemove, showRemove, nameError
 
         <div className="form-group">
           <label>Screenshots</label>
+          <div className="screenshot-count-label">{totalScreenshots} screenshot{totalScreenshots !== 1 ? 's' : ''} selected</div>
           <div className="screenshot-upload-area">
             {uploadedScreenshots.map((src, idx) => (
               <div key={`uploaded-${idx}`} className="screenshot-thumb">
@@ -170,7 +172,7 @@ function FeatureCard({ feature, index, onChange, onRemove, showRemove, nameError
                 onChange={handleScreenshotSelect}
                 hidden
               />
-              + Add
+              {totalScreenshots > 0 ? '+ Upload More' : '+ Add'}
             </label>
           </div>
           <span className="screenshot-hint">You can also paste images from clipboard (Ctrl+V)</span>

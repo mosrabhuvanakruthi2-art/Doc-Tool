@@ -2,6 +2,17 @@ import { useState, useEffect, useRef } from 'react';
 import mammoth from 'mammoth';
 import { showToast } from './Toast';
 
+const MAX_CLOUD_INFO_PAGES = 50;
+const MAX_CLOUD_INFO_IMAGES = 200;
+
+function getCloudInfoStatsFromHtml(html = '') {
+  const safeHtml = String(html || '');
+  const imageCount = (safeHtml.match(/<img\b/gi) || []).length;
+  const plainText = safeHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  const pageCount = Math.max(1, Math.ceil(plainText.length / 3200));
+  return { pageCount, imageCount };
+}
+
 function CloudInfoAdmin({ onChanged }) {
   const [items, setItems] = useState([]);
   const [mode, setMode] = useState('list');
@@ -13,6 +24,7 @@ function CloudInfoAdmin({ onChanged }) {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [showReorder, setShowReorder] = useState(false);
+  const [uploadStats, setUploadStats] = useState({ pageCount: 0, imageCount: 0 });
   const fileInputRef = useRef(null);
   const editorRef = useRef(null);
   const formTopRef = useRef(null);
@@ -41,6 +53,7 @@ function CloudInfoAdmin({ onChanged }) {
     setSelectedId('');
     setIsEditing(false);
     setDeleteConfirm(null);
+    setUploadStats({ pageCount: 0, imageCount: 0 });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -59,6 +72,7 @@ function CloudInfoAdmin({ onChanged }) {
       setSelectedId(data.item.id || data.item._id);
       setName(data.item.name);
       setContent(data.item.content || '');
+      setUploadStats(getCloudInfoStatsFromHtml(data.item.content || ''));
       setMode('edit');
       setIsEditing(false);
     } catch (err) {
@@ -83,9 +97,17 @@ function CloudInfoAdmin({ onChanged }) {
       };
       const result = await mammoth.convertToHtml({ arrayBuffer }, options);
       const html = result.value;
+      const stats = getCloudInfoStatsFromHtml(html);
+      if (stats.pageCount > MAX_CLOUD_INFO_PAGES) {
+        throw new Error(`Document has ${stats.pageCount} pages. Maximum allowed is ${MAX_CLOUD_INFO_PAGES}.`);
+      }
+      if (stats.imageCount > MAX_CLOUD_INFO_IMAGES) {
+        throw new Error(`Document has ${stats.imageCount} images. Maximum allowed is ${MAX_CLOUD_INFO_IMAGES}.`);
+      }
       setContent(html);
+      setUploadStats(stats);
       if (editorRef.current) editorRef.current.innerHTML = html;
-      showToast('Document uploaded and parsed successfully');
+      showToast(`Document uploaded successfully (${stats.pageCount} pages, ${stats.imageCount} images).`);
     } catch (err) {
       showToast('Failed to parse document: ' + err.message, 'error');
     }
@@ -107,6 +129,7 @@ function CloudInfoAdmin({ onChanged }) {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      if (data.stats) setUploadStats(data.stats);
 
       showToast(mode === 'create' ? 'Cloud Info created successfully!' : 'Cloud Info updated successfully!');
       await fetchItems();
@@ -303,6 +326,9 @@ function CloudInfoAdmin({ onChanged }) {
                   accept=".docx"
                   onChange={handleFileUpload}
                 />
+                <small className="cloud-upload-meta">
+                  Supports up to {MAX_CLOUD_INFO_PAGES} pages and {MAX_CLOUD_INFO_IMAGES}+ images. Current: {uploadStats.pageCount || 0} pages, {uploadStats.imageCount || 0} images.
+                </small>
               </div>
             )}
 

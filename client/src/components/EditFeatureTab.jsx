@@ -119,7 +119,10 @@ function EditFeatureTab({ refreshKey, onChanged }) {
   const [isOffline, setIsOffline] = useState(false);
   const [editingIds, setEditingIds] = useState(new Set());
   const [deletePTConfirm, setDeletePTConfirm] = useState(false);
-  const [deleteComboConfirm, setDeleteComboConfirm] = useState(false);
+  const [deleteComboAllConfirm, setDeleteComboAllConfirm] = useState(false);
+  const [showComboRename, setShowComboRename] = useState(false);
+  const [comboRenameDraft, setComboRenameDraft] = useState('');
+  const [comboRenameSaving, setComboRenameSaving] = useState(false);
   const [showPTReorder, setShowPTReorder] = useState(false);
   const [showComboReorder, setShowComboReorder] = useState(false);
 
@@ -359,17 +362,70 @@ function EditFeatureTab({ refreshKey, onChanged }) {
   };
 
   const handleDeleteCombination = async () => {
-    const scopeLabel = scope === 'inscope' ? 'In Scope' : 'Out of Scope';
+    if (!combination) return;
+    const matchedConfig = configs.find(c => c.name === productType);
+    if (!matchedConfig) {
+      showToast('Unable to find selected product type.', 'error');
+      return;
+    }
     try {
-      const params = new URLSearchParams({ productType, scope, combination });
-      await fetch(`/api/features/by-scope?${params}`, { method: 'DELETE' });
+      const res = await fetch('/api/product-types/combination', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productType, combination }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Delete failed');
       setFeatures([]);
       setOriginalFeatures([]);
-      setDeleteComboConfirm(false);
-      showToast(`All ${scopeLabel} features for "${combination}" deleted.`);
+      setCombination('');
+      setDeleteComboAllConfirm(false);
+      setShowComboRename(false);
+      setComboRenameDraft('');
+      await refresh();
+      showToast(`Combination "${combination}" moved to Trash with related data.`);
       if (onChanged) onChanged();
     } catch (err) {
       showToast('Delete failed: ' + err.message, 'error');
+    }
+  };
+
+  const handleRenameCombination = async () => {
+    const oldName = (combination || '').trim();
+    const newName = comboRenameDraft.trim();
+    if (!oldName) return;
+    if (!newName) {
+      showToast('New combination name is required.', 'error');
+      return;
+    }
+    if (oldName.toLowerCase() === newName.toLowerCase()) {
+      showToast('Please enter a different name.', 'error');
+      return;
+    }
+    if (combinations.some(c => c.toLowerCase() === newName.toLowerCase())) {
+      showToast('This combination already exists.', 'error');
+      return;
+    }
+
+    setComboRenameSaving(true);
+    try {
+      const res = await fetch('/api/product-types/combination/rename', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productType, oldName, newName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Rename failed');
+      await refresh();
+      setCombination(newName);
+      setShowComboRename(false);
+      setComboRenameDraft('');
+      showToast(`Combination renamed to "${newName}".`);
+      if (onChanged) onChanged();
+    } catch (err) {
+      showToast('Rename failed: ' + err.message, 'error');
+    } finally {
+      setComboRenameSaving(false);
     }
   };
 
@@ -584,26 +640,60 @@ function EditFeatureTab({ refreshKey, onChanged }) {
             <div className="select-with-action">
               <CustomSelect
                 value={combination}
-                onChange={(e) => { setCombination(e.target.value); setDeleteComboConfirm(false); }}
+                onChange={(e) => {
+                  setCombination(e.target.value);
+                  setDeleteComboAllConfirm(false);
+                  setShowComboRename(false);
+                  setComboRenameDraft('');
+                }}
                 options={combinations.map(c => ({ value: c, label: c }))}
                 placeholder="-- Select Combination --"
               />
-              {combination && !deleteComboConfirm && (
-                <button className="btn-delete-inline" onClick={() => setDeleteComboConfirm(true)} title={`Delete all ${scope === 'inscope' ? 'In Scope' : 'Out of Scope'} features for this combination`}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                  Delete
-                </button>
+              {combination && !deleteComboAllConfirm && (
+                <>
+                  <button
+                    className="btn-edit-sm"
+                    onClick={() => { setShowComboRename(prev => !prev); setComboRenameDraft(combination); }}
+                    title="Rename this combination"
+                  >
+                    Rename
+                  </button>
+                  <button className="btn-delete-inline" onClick={() => setDeleteComboAllConfirm(true)} title="Delete this entire combination and move to Trash">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    Delete
+                  </button>
+                </>
               )}
             </div>
           </div>
-          {deleteComboConfirm && (
+          {showComboRename && combination && (
             <div className="delete-confirm-bar">
               <span className="delete-confirm-msg">
-                Delete all <strong>{scope === 'inscope' ? 'In Scope' : 'Out of Scope'}</strong> features for <strong>{combination}</strong>?
-                <br /><small>Only features in this scope will be removed. The combination itself will remain.</small>
+                Rename combination <strong>{combination}</strong>
+              </span>
+              <input
+                type="text"
+                value={comboRenameDraft}
+                onChange={(e) => setComboRenameDraft(e.target.value)}
+                placeholder="Enter new combination name"
+                className="inline-rename-input"
+              />
+              <button className="btn-yes" onClick={handleRenameCombination} disabled={comboRenameSaving}>
+                {comboRenameSaving ? 'Saving...' : 'Save'}
+              </button>
+              <button className="btn-no" onClick={() => { setShowComboRename(false); setComboRenameDraft(''); }}>
+                Cancel
+              </button>
+            </div>
+          )}
+          {deleteComboAllConfirm && (
+            <div className="delete-confirm-bar">
+              <span className="delete-confirm-msg">
+                Delete entire combination <strong>{combination}</strong> for <strong>{productType}</strong>?
+                <br /><small>Combination + related features will move to Trash and can be restored.</small>
               </span>
               <button className="btn-yes" onClick={handleDeleteCombination}>Yes, Delete</button>
-              <button className="btn-no" onClick={() => setDeleteComboConfirm(false)}>Cancel</button>
+              <button className="btn-no" onClick={() => setDeleteComboAllConfirm(false)}>Cancel</button>
             </div>
           )}
 

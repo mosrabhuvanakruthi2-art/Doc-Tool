@@ -69,10 +69,19 @@ function AdminRoute({ darkMode, setDarkMode }) {
 }
 
 function MainContent() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const view = searchParams.get('view') || '';
   const matrixSlug = searchParams.get('matrix') || '';
   const infoSlug = searchParams.get('info') || '';
+
+  useEffect(() => {
+    const navEntries = performance.getEntriesByType('navigation');
+    const isReload = navEntries.length > 0 && navEntries[0].type === 'reload';
+    if (isReload && searchParams.toString()) {
+      setSearchParams(new URLSearchParams(), { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (view === 'compatibility' && matrixSlug) {
     return <CompatibilityTable matrixSlug={matrixSlug} />;

@@ -13,13 +13,18 @@ const Category = require('./models/Category');
 const CompatibilityMatrix = require('./models/CompatibilityMatrix');
 const ProductConfig = require('./models/ProductConfig');
 const CloudInfo = require('./models/CloudInfo');
+const DeletedCombination = require('./models/DeletedCombination');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const API_BODY_LIMIT = process.env.API_BODY_LIMIT || '200mb';
+const SCREENSHOT_UPLOAD_LIMIT = Number(process.env.SCREENSHOT_UPLOAD_LIMIT || 50);
+const CLOUD_INFO_MAX_PAGES = Number(process.env.CLOUD_INFO_MAX_PAGES || 50);
+const CLOUD_INFO_MAX_IMAGES = Number(process.env.CLOUD_INFO_MAX_IMAGES || 200);
 
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: API_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: API_BODY_LIMIT }));
 
 // --------------- Admin Auth ---------------
 
@@ -369,6 +374,112 @@ app.delete('/api/product-config/:id/combinations/:combo', async (req, res) => {
   }
 });
 
+app.delete(['/api/product-types/combination', '/product-types/combination'], async (req, res) => {
+  try {
+    const combination = resolveCombinationFromPayload(req.body);
+    const productType = normalizeCombinationName(req.body.productType);
+    if (!combination) {
+      return res.status(400).json({ error: 'Provide combination or source/destination.' });
+    }
+
+    const configFilter = { isDeleted: { $ne: true }, combinations: combination };
+    if (productType) configFilter.name = productType;
+    const configs = await ProductConfig.find(configFilter);
+    if (!configs.length) return res.status(404).json({ error: 'Combination not found.' });
+
+    const now = new Date();
+    let deletedFeatures = 0;
+    const trashDocs = [];
+
+    for (const config of configs) {
+      const comboIndex = config.combinations.findIndex((c) => c === combination);
+      const features = await Feature.find({
+        productType: config.name,
+        combination,
+        isDeleted: { $ne: true },
+      }).select('_id').lean();
+      const featureIds = features.map((f) => f._id.toString());
+
+      if (featureIds.length > 0) {
+        const result = await Feature.updateMany(
+          { _id: { $in: featureIds } },
+          { isDeleted: true, deletedAt: now },
+        );
+        deletedFeatures += result.modifiedCount;
+      }
+
+      config.combinations = config.combinations.filter((c) => c !== combination);
+      await config.save();
+
+      trashDocs.push({
+        productConfigId: config._id.toString(),
+        productType: config.name,
+        combination,
+        comboIndex,
+        featureIds,
+        isDeleted: true,
+        deletedAt: now,
+      });
+    }
+
+    if (trashDocs.length > 0) {
+      await DeletedCombination.insertMany(trashDocs);
+    }
+
+    res.json({
+      success: true,
+      combination,
+      productTypesAffected: configs.length,
+      deletedFeatures,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put(['/api/product-types/combination/rename', '/product-types/combination/rename'], async (req, res) => {
+  try {
+    const oldName = normalizeCombinationName(req.body.oldName);
+    const newName = normalizeCombinationName(req.body.newName);
+    const productType = normalizeCombinationName(req.body.productType);
+    if (!oldName || !newName) {
+      return res.status(400).json({ error: 'oldName and newName are required.' });
+    }
+    if (oldName.toLowerCase() === newName.toLowerCase()) {
+      return res.status(400).json({ error: 'New combination name must be different.' });
+    }
+
+    const configFilter = { isDeleted: { $ne: true }, combinations: oldName };
+    if (productType) configFilter.name = productType;
+    const configs = await ProductConfig.find(configFilter);
+    if (!configs.length) return res.status(404).json({ error: 'Combination not found.' });
+
+    for (const config of configs) {
+      const duplicate = config.combinations.some((c) => c.toLowerCase() === newName.toLowerCase() && c !== oldName);
+      if (duplicate) {
+        return res.status(400).json({ error: `"${newName}" already exists under ${config.name}.` });
+      }
+    }
+
+    for (const config of configs) {
+      config.combinations = config.combinations.map((c) => (c === oldName ? newName : c));
+      await config.save();
+      await Feature.updateMany(
+        { productType: config.name, combination: oldName },
+        { combination: newName },
+      );
+      await DeletedCombination.updateMany(
+        { productType: config.name, combination: oldName, isDeleted: true },
+        { combination: newName },
+      );
+    }
+
+    res.json({ success: true, oldName, newName, productTypesAffected: configs.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete('/api/features/by-scope', async (req, res) => {
   try {
     const { productType, scope, combination } = req.query;
@@ -386,6 +497,55 @@ app.delete('/api/features/by-scope', async (req, res) => {
 
 function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeCombinationName(raw) {
+  return String(raw || '').trim().replace(/\s+/g, ' ');
+}
+
+function resolveCombinationFromPayload(payload = {}) {
+  if (payload.combination) {
+    return normalizeCombinationName(payload.combination);
+  }
+  const source = normalizeCombinationName(payload.source);
+  const destination = normalizeCombinationName(payload.destination);
+  if (source && destination) return `${source} to ${destination}`;
+  return '';
+}
+
+function estimateCloudInfoPageCount(html = '', text = '') {
+  const pageBreakMatches = html.match(/page-break-(before|after)\s*:\s*always/gi) || [];
+  const hardPageBreaks = html.match(/<br[^>]*style="[^"]*page-break/gi) || [];
+  const explicitPages = Math.max(pageBreakMatches.length, hardPageBreaks.length) + 1;
+  const textPages = Math.max(1, Math.ceil(String(text || '').length / 3200));
+  return Math.max(explicitPages, textPages);
+}
+
+function getCloudInfoContentStats(content = '') {
+  const html = String(content || '');
+  const imageCount = (html.match(/<img\b/gi) || []).length;
+  const plainText = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  const pageCount = estimateCloudInfoPageCount(html, plainText);
+  return { imageCount, pageCount };
+}
+
+function validateCloudInfoContent(content = '') {
+  const stats = getCloudInfoContentStats(content);
+  if (stats.pageCount > CLOUD_INFO_MAX_PAGES) {
+    return {
+      ok: false,
+      message: `Document has ${stats.pageCount} pages. Maximum allowed is ${CLOUD_INFO_MAX_PAGES}.`,
+      stats,
+    };
+  }
+  if (stats.imageCount > CLOUD_INFO_MAX_IMAGES) {
+    return {
+      ok: false,
+      message: `Document has ${stats.imageCount} images. Maximum allowed is ${CLOUD_INFO_MAX_IMAGES}.`,
+      stats,
+    };
+  }
+  return { ok: true, stats };
 }
 
 function mapFeature(f) {
@@ -613,23 +773,34 @@ app.delete('/api/features/:id', async (req, res) => {
 
 // --------------- Screenshot Upload ---------------
 
-app.post('/api/screenshots', upload.array('screenshots', 20), (req, res) => {
-  try {
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ error: 'No files uploaded' });
+app.post('/api/screenshots', (req, res) => {
+  upload.array('screenshots', SCREENSHOT_UPLOAD_LIMIT)(req, res, (err) => {
+    if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_UNEXPECTED_FILE') {
+        return res.status(400).json({
+          error: `You can upload up to ${SCREENSHOT_UPLOAD_LIMIT} screenshots at once.`,
+        });
+      }
+      return res.status(400).json({ error: err.message || 'Upload failed' });
     }
-    const paths = req.files.map(f => {
-      // --- Cloudinary path (commented out) ---
-      // if (f.path && f.path.startsWith('http')) return f.path;
-      // return `/assets/screenshots/${f.filename}`;
-      // --- End Cloudinary path ---
-      const relativePath = path.relative(assetsDir, f.path).replace(/\\/g, '/');
-      return `/assets/${relativePath}`;
-    });
-    res.json({ success: true, paths });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+
+    try {
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ error: 'No files uploaded' });
+      }
+      const paths = req.files.map(f => {
+        // --- Cloudinary path (commented out) ---
+        // if (f.path && f.path.startsWith('http')) return f.path;
+        // return `/assets/screenshots/${f.filename}`;
+        // --- End Cloudinary path ---
+        const relativePath = path.relative(assetsDir, f.path).replace(/\\/g, '/');
+        return `/assets/${relativePath}`;
+      });
+      res.json({ success: true, paths });
+    } catch (innerErr) {
+      res.status(500).json({ error: innerErr.message });
+    }
+  });
 });
 
 // --------------- Compatibility Matrix ---------------
@@ -753,12 +924,20 @@ app.post('/api/cloud-info', async (req, res) => {
   try {
     const { name, content } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
+    const validation = validateCloudInfoContent(content || '');
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.message, stats: validation.stats });
+    }
     let slug = slugifyCloudInfo(name);
     const existing = await CloudInfo.findOne({ slug }).lean();
     if (existing) slug = slug + '-' + Date.now();
     const count = await CloudInfo.countDocuments();
     const item = await CloudInfo.create({ name, slug, content: content || '', order: count });
-    res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
+    res.json({
+      success: true,
+      item: { ...item.toObject(), id: item._id.toString() },
+      stats: validation.stats,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -768,16 +947,28 @@ app.put('/api/cloud-info/:id', async (req, res) => {
   try {
     const { name, content } = req.body;
     const update = {};
+    let contentStats = null;
     if (name !== undefined) {
       update.name = name;
       update.slug = slugifyCloudInfo(name);
       const existing = await CloudInfo.findOne({ slug: update.slug, _id: { $ne: req.params.id } }).lean();
       if (existing) update.slug = update.slug + '-' + Date.now();
     }
-    if (content !== undefined) update.content = content;
+    if (content !== undefined) {
+      const validation = validateCloudInfoContent(content || '');
+      if (!validation.ok) {
+        return res.status(400).json({ error: validation.message, stats: validation.stats });
+      }
+      update.content = content;
+      contentStats = validation.stats;
+    }
     const item = await CloudInfo.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ error: 'Not found' });
-    res.json({ success: true, item: { ...item, id: item._id.toString() } });
+    res.json({
+      success: true,
+      item: { ...item, id: item._id.toString() },
+      stats: contentStats || getCloudInfoContentStats(item.content || ''),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -811,17 +1002,25 @@ app.put('/api/cloud-info-reorder', async (req, res) => {
 
 app.get('/api/trash', async (req, res) => {
   try {
-    const [features, productConfigs, matrices, cloudInfos] = await Promise.all([
+    const [features, productConfigs, matrices, cloudInfos, deletedCombinations] = await Promise.all([
       Feature.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
       ProductConfig.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
       CompatibilityMatrix.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
       CloudInfo.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
+      DeletedCombination.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
     ]);
     res.json({
       features: features.map(f => ({ ...mapFeature(f), deletedAt: f.deletedAt })),
       productConfigs: productConfigs.map(c => ({ id: c._id.toString(), name: c.name, combinations: c.combinations, deletedAt: c.deletedAt })),
       matrices: matrices.map(m => ({ id: m._id.toString(), name: m.name, slug: m.slug, deletedAt: m.deletedAt })),
       cloudInfos: cloudInfos.map(i => ({ id: i._id.toString(), name: i.name, slug: i.slug, deletedAt: i.deletedAt })),
+      combinations: deletedCombinations.map((c) => ({
+        id: c._id.toString(),
+        productType: c.productType,
+        combination: c.combination,
+        featureIds: c.featureIds || [],
+        deletedAt: c.deletedAt,
+      })),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -831,6 +1030,36 @@ app.get('/api/trash', async (req, res) => {
 app.put('/api/trash/restore/:type/:id', async (req, res) => {
   try {
     const { type, id } = req.params;
+    if (type === 'combination') {
+      const comboTrash = await DeletedCombination.findById(id);
+      if (!comboTrash) return res.status(404).json({ error: 'Not found' });
+      if (!comboTrash.isDeleted) return res.status(400).json({ error: 'Item is not in trash' });
+
+      const config = await ProductConfig.findById(comboTrash.productConfigId);
+      if (!config) return res.status(404).json({ error: 'Parent product type not found' });
+      if (!config.combinations.includes(comboTrash.combination)) {
+        const idx = Number.isInteger(comboTrash.comboIndex) ? comboTrash.comboIndex : -1;
+        if (idx >= 0 && idx <= config.combinations.length) {
+          config.combinations.splice(idx, 0, comboTrash.combination);
+        } else {
+          config.combinations.push(comboTrash.combination);
+        }
+        await config.save();
+      }
+
+      if (Array.isArray(comboTrash.featureIds) && comboTrash.featureIds.length > 0) {
+        await Feature.updateMany(
+          { _id: { $in: comboTrash.featureIds } },
+          { isDeleted: false, deletedAt: null },
+        );
+      }
+
+      comboTrash.isDeleted = false;
+      comboTrash.deletedAt = null;
+      await comboTrash.save();
+      return res.json({ success: true });
+    }
+
     let Model;
     if (type === 'feature') Model = Feature;
     else if (type === 'productConfig') Model = ProductConfig;
@@ -849,6 +1078,14 @@ app.put('/api/trash/restore/:type/:id', async (req, res) => {
 app.delete('/api/trash/permanent/:type/:id', async (req, res) => {
   try {
     const { type, id } = req.params;
+    if (type === 'combination') {
+      const doc = await DeletedCombination.findById(id);
+      if (!doc) return res.status(404).json({ error: 'Not found' });
+      if (!doc.isDeleted) return res.status(400).json({ error: 'Item is not in trash' });
+      await DeletedCombination.findByIdAndDelete(id);
+      return res.json({ success: true });
+    }
+
     let Model;
     if (type === 'feature') Model = Feature;
     else if (type === 'productConfig') Model = ProductConfig;

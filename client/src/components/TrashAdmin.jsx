@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { showToast } from './Toast';
 
 function TrashAdmin({ onChanged }) {
-  const [trash, setTrash] = useState({ features: [], productConfigs: [], matrices: [], cloudInfos: [] });
+  const [trash, setTrash] = useState({ features: [], productConfigs: [], matrices: [], cloudInfos: [], combinations: [] });
   const [loading, setLoading] = useState(true);
   const [permanentDelete, setPermanentDelete] = useState(null);
   const [deleteInput, setDeleteInput] = useState('');
@@ -67,7 +67,7 @@ function TrashAdmin({ onChanged }) {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
-  const totalItems = trash.features.length + trash.productConfigs.length + trash.matrices.length + trash.cloudInfos.length;
+  const totalItems = trash.features.length + trash.productConfigs.length + trash.matrices.length + trash.cloudInfos.length + (trash.combinations?.length || 0);
 
   const renderSection = (title, items, type, getLabel) => {
     if (items.length === 0) return null;
@@ -144,6 +144,7 @@ function TrashAdmin({ onChanged }) {
         <>
           {renderSection('Features', trash.features, 'feature', f => `${f.name} (${f.productType} / ${f.combination || 'N/A'} / ${f.scope})`)}
           {renderSection('Product Types', trash.productConfigs, 'productConfig', c => c.name)}
+          {renderSection('Combinations', trash.combinations || [], 'combination', c => `${c.productType} / ${c.combination}`)}
           {renderSection('Compatibility Matrices', trash.matrices, 'compatibility', m => m.name)}
           {renderSection('Cloud Info', trash.cloudInfos, 'cloudInfo', i => i.name)}
         </>

@@ -138,10 +138,11 @@ function groupByFamily(features) {
   return grouped;
 }
 
-async function fetchImageViaProxy(url) {
+async function fetchImageForExport(url) {
   try {
-    const proxyUrl = `/api/image-proxy?url=${encodeURIComponent(url)}`;
-    const res = await fetch(proxyUrl);
+    const isLocal = url.startsWith('/assets/') || url.startsWith('assets/');
+    const fetchUrl = isLocal ? url : `/api/image-proxy?url=${encodeURIComponent(url)}`;
+    const res = await fetch(fetchUrl);
     if (!res.ok) return null;
     const contentType = res.headers.get('content-type') || '';
     const buf = await res.arrayBuffer();
@@ -313,7 +314,7 @@ function FeatureTable() {
           if (feature.screenshots && feature.screenshots.length > 0) {
             for (let sIdx = 0; sIdx < feature.screenshots.length; sIdx++) {
               const imgUrl = feature.screenshots[sIdx];
-              const imgResult = await fetchImageViaProxy(imgUrl);
+              const imgResult = await fetchImageForExport(imgUrl);
               if (imgResult) {
                 children.push(new Paragraph({
                   children: [

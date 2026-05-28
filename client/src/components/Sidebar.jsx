@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useProductConfig } from '../ProductConfigContext';
+import { useAuth } from '../AuthContext';
 
 const PRODUCT_ICONS = {
   Message: (
@@ -39,6 +40,15 @@ const COMPAT_ICON = (
   </svg>
 );
 
+const DOC_ICON = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
+    <line x1="16" y1="13" x2="8" y2="13" />
+    <line x1="16" y1="17" x2="8" y2="17" />
+  </svg>
+);
+
 const CLOUD_INFO_ICON = (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
@@ -49,6 +59,7 @@ const COMPAT_MATRICES_CHANGED = 'docproject:compat-matrices-changed';
 
 function Sidebar() {
   const { productTypes, combinationsByProduct } = useProductConfig();
+  const { hasPermission } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeCombination = searchParams.get('combination') || '';
   const activeMatrix = searchParams.get('matrix') || '';
@@ -56,8 +67,10 @@ function Sidebar() {
   const [expandedProduct, setExpandedProduct] = useState('');
   const [compatExpanded, setCompatExpanded] = useState(false);
   const [cloudInfoExpanded, setCloudInfoExpanded] = useState(false);
+  const [docsExpanded, setDocsExpanded] = useState(false);
   const [compatMatrices, setCompatMatrices] = useState([]);
   const [cloudInfoItems, setCloudInfoItems] = useState([]);
+  const [docItems, setDocItems] = useState([]);
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [isDragging, setIsDragging] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -76,13 +89,21 @@ function Sidebar() {
         .then((data) => setCloudInfoItems(data.items || []))
         .catch(() => {});
     };
+    const loadDocs = () => {
+      fetch('/api/documents')
+        .then((res) => res.json())
+        .then((data) => setDocItems(data.items || []))
+        .catch(() => {});
+    };
     loadCompat();
     loadCloud();
+    loadDocs();
     const onCompatChanged = () => loadCompat();
     window.addEventListener(COMPAT_MATRICES_CHANGED, onCompatChanged);
     const onFocus = () => {
       loadCompat();
       loadCloud();
+      loadDocs();
     };
     window.addEventListener('focus', onFocus);
     return () => {
@@ -106,6 +127,7 @@ function Sidebar() {
       setExpandedProduct(slug);
       setCompatExpanded(false);
       setCloudInfoExpanded(false);
+      setDocsExpanded(false);
       const params = new URLSearchParams();
       setSearchParams(params);
     }
@@ -114,11 +136,13 @@ function Sidebar() {
   const handleCombinationClick = (product, combo) => {
     setCompatExpanded(false);
     setCloudInfoExpanded(false);
+    setDocsExpanded(false);
     const params = new URLSearchParams(searchParams);
     params.set('product', product);
     params.delete('view');
     params.delete('matrix');
     params.delete('info');
+    params.delete('doc');
     params.set('combination', combo);
     setSearchParams(params);
   };
@@ -132,6 +156,7 @@ function Sidebar() {
     setCompatExpanded(prev => !prev);
     setExpandedProduct('');
     setCloudInfoExpanded(false);
+    setDocsExpanded(false);
     if (wasExpanded) {
       setSearchParams(new URLSearchParams());
     }
@@ -153,9 +178,32 @@ function Sidebar() {
     setCloudInfoExpanded(prev => !prev);
     setExpandedProduct('');
     setCompatExpanded(false);
+    setDocsExpanded(false);
     if (wasExpanded) {
       setSearchParams(new URLSearchParams());
     }
+  };
+
+  const handleDocsToggle = () => {
+    if (collapsed) {
+      setCollapsed(false);
+      return;
+    }
+    const wasExpanded = docsExpanded;
+    setDocsExpanded(prev => !prev);
+    setExpandedProduct('');
+    setCompatExpanded(false);
+    setCloudInfoExpanded(false);
+    if (wasExpanded) {
+      setSearchParams(new URLSearchParams());
+    }
+  };
+
+  const handleDocClick = (slug) => {
+    const params = new URLSearchParams();
+    params.set('view', 'documents');
+    params.set('doc', slug);
+    setSearchParams(params);
   };
 
   const handleCloudInfoClick = (slug) => {
@@ -209,6 +257,7 @@ function Sidebar() {
         {!collapsed && (
           <>
             {/* Product Types dropdown section */}
+            {hasPermission('productTypes') && (
             <div className="sidebar-nav-section">
               <div className="sidebar-nav-header">
                 <span className="sidebar-nav-label">Product Types</span>
@@ -266,9 +315,10 @@ function Sidebar() {
                 })}
               </ul>
             </div>
+            )}
 
-            {/* Compatibility dropdown section — no gap */}
-            {compatMatrices.length > 0 && (
+            {/* Compatibility dropdown section â€” no gap */}
+            {hasPermission('compatibility') && compatMatrices.length > 0 && (
               <div className="sidebar-nav-section">
                 <div className="sidebar-nav-header">
                   <span className="sidebar-nav-label">Compatibility</span>
@@ -309,8 +359,8 @@ function Sidebar() {
               </div>
             )}
 
-            {/* Cloud Info dropdown section — no gap */}
-            {cloudInfoItems.length > 0 && (
+            {/* Cloud Info dropdown section â€” no gap */}
+            {hasPermission('cloudInfo') && cloudInfoItems.length > 0 && (
               <div className="sidebar-nav-section">
                 <div className="sidebar-nav-header">
                   <span className="sidebar-nav-label">Cloud Info</span>
@@ -339,6 +389,48 @@ function Sidebar() {
                             <button
                               className={`sidebar-combo-btn ${activeView === 'cloudinfo' && searchParams.get('info') === item.slug ? 'active' : ''}`}
                               onClick={() => handleCloudInfoClick(item.slug)}
+                            >
+                              {item.name}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                </ul>
+              </div>
+            )}
+
+            {/* Documents dropdown section â€" no gap */}
+            {hasPermission('documents') && docItems.length > 0 && (
+              <div className="sidebar-nav-section">
+                <div className="sidebar-nav-header">
+                  <span className="sidebar-nav-label">Documents</span>
+                </div>
+                <ul className="sidebar-items">
+                  <li>
+                    <button
+                      className={`sidebar-product-btn ${docsExpanded ? 'active' : ''}`}
+                      onClick={handleDocsToggle}
+                    >
+                      <span className="sidebar-product-icon-label">
+                        {DOC_ICON}
+                        <span>Documents</span>
+                      </span>
+                      <svg
+                        className={`sidebar-product-icon ${docsExpanded ? 'expanded' : ''}`}
+                        width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                      >
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                    </button>
+                    {docsExpanded && (
+                      <ul className="sidebar-combos">
+                        {docItems.map(item => (
+                          <li key={item._id}>
+                            <button
+                              className={`sidebar-combo-btn ${activeView === 'documents' && searchParams.get('doc') === item.slug ? 'active' : ''}`}
+                              onClick={() => handleDocClick(item.slug)}
                             >
                               {item.name}
                             </button>

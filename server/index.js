@@ -14,6 +14,8 @@ const CompatibilityMatrix = require('./models/CompatibilityMatrix');
 const ProductConfig = require('./models/ProductConfig');
 const CloudInfo = require('./models/CloudInfo');
 const DeletedCombination = require('./models/DeletedCombination');
+const User = require('./models/User');
+const DocModel = require('./models/Document');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -26,32 +28,136 @@ app.use(cors());
 app.use(express.json({ limit: API_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: API_BODY_LIMIT }));
 
-// --------------- Admin Auth ---------------
+// --------------- Auth ---------------
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const JWT_SECRET = process.env.JWT_SECRET;
 
-app.post('/api/admin/login', (req, res) => {
+const FULL_PERMISSIONS = { productTypes: true, compatibility: true, cloudInfo: true, documents: true };
+
+function decodeToken(req) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  try { return jwt.verify(authHeader.split(' ')[1], JWT_SECRET); } catch { return null; }
+}
+
+function requireAdmin(req, res, next) {
+  const decoded = decodeToken(req);
+  if (!decoded || decoded.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+  req.user = decoded;
+  next();
+}
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+
+    if (email.toLowerCase().trim() === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
+      const payload = { email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS };
+      const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+      return res.json({ success: true, token, user: { email: ADMIN_EMAIL, name: 'Admin', role: 'admin', permissions: FULL_PERMISSIONS } });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user) return res.status(401).json({ error: 'Invalid email or password' });
+    if (!user.isActive) return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
+    const valid = await user.comparePassword(password);
+    if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
+
+    const perms = user.role === 'admin' ? FULL_PERMISSIONS : (user.permissions || FULL_PERMISSIONS);
+    const payload = { userId: user._id.toString(), email: user.email, role: user.role, permissions: perms };
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+    res.json({ success: true, token, user: { email: user.email, name: user.name, role: user.role, permissions: perms } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/auth/verify', (req, res) => {
+  const decoded = decodeToken(req);
+  if (!decoded) return res.status(401).json({ error: 'Invalid or expired token' });
+  const perms = decoded.role === 'admin' ? FULL_PERMISSIONS : (decoded.permissions || FULL_PERMISSIONS);
+  res.json({ success: true, user: { email: decoded.email, name: decoded.name || '', role: decoded.role, permissions: perms } });
+});
+
+app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
-  if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
-    const token = jwt.sign({ email, role: 'admin' }, JWT_SECRET, { expiresIn: '8h' });
+  if (email?.toLowerCase().trim() === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
+    const token = jwt.sign({ email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: '8h' });
+    return res.json({ success: true, token });
+  }
+  const user = await User.findOne({ email: email?.toLowerCase().trim(), role: 'admin', isActive: true });
+  if (user && await user.comparePassword(password)) {
+    const token = jwt.sign({ userId: user._id.toString(), email: user.email, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: '8h' });
     return res.json({ success: true, token });
   }
   res.status(401).json({ error: 'Invalid email or password' });
 });
 
 app.get('/api/admin/verify', (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'No token provided' });
-  }
+  const decoded = decodeToken(req);
+  if (!decoded) return res.status(401).json({ error: 'Invalid or expired token' });
+  res.json({ success: true, email: decoded.email });
+});
+
+// --------------- User Management (Admin only) ---------------
+
+app.get('/api/users', requireAdmin, async (req, res) => {
   try {
-    const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
-    res.json({ success: true, email: decoded.email });
-  } catch {
-    res.status(401).json({ error: 'Invalid or expired token' });
-  }
+    const users = await User.find().select('-password').sort({ createdAt: -1 }).lean();
+    res.json({ users: users.map(u => ({ ...u, id: u._id.toString() })) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/users', requireAdmin, async (req, res) => {
+  try {
+    const { email, password, name, role, permissions } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+    const existing = await User.findOne({ email: email.toLowerCase().trim() });
+    if (existing) return res.status(400).json({ error: 'A user with this email already exists' });
+    const user = await User.create({
+      email: email.toLowerCase().trim(),
+      password,
+      name: name || '',
+      role: role || 'viewer',
+      permissions: permissions || {},
+    });
+    const obj = user.toObject();
+    delete obj.password;
+    res.json({ success: true, user: { ...obj, id: obj._id.toString() } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/users/:id', requireAdmin, async (req, res) => {
+  try {
+    const { name, role, permissions, password, isActive } = req.body;
+    const update = {};
+    if (name !== undefined) update.name = name;
+    if (role !== undefined) update.role = role;
+    if (permissions !== undefined) update.permissions = permissions;
+    if (isActive !== undefined) update.isActive = isActive;
+
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    Object.assign(user, update);
+    if (password) user.password = password;
+    await user.save();
+
+    const obj = user.toObject();
+    delete obj.password;
+    res.json({ success: true, user: { ...obj, id: obj._id.toString() } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/users/:id', requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findByIdAndDelete(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // --------------- MongoDB Connection ---------------
@@ -113,7 +219,7 @@ Fix options:
   • Atlas: use standard mongodb://… connection string instead of mongodb+srv://
 `);
     }
-    process.exit(1);
+    console.error('Server will continue without MongoDB — admin login still works, but DB-dependent features will fail.');
   });
 
 // --------------- Upload Config (Cloudinary or Local) ---------------
@@ -998,22 +1104,148 @@ app.put('/api/cloud-info-reorder', async (req, res) => {
   }
 });
 
+// --------------- Documents ---------------
+
+function slugifyDocument(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+app.get('/api/documents', async (req, res) => {
+  try {
+    const items = await DocModel.find({ isDeleted: { $ne: true } }).sort({ order: 1, createdAt: 1 }).lean();
+    res.json({ items: items.map(i => ({ ...i, id: i._id.toString() })) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/documents/:slug', async (req, res) => {
+  try {
+    const item = await DocModel.findOne({ slug: req.params.slug, isDeleted: { $ne: true } }).lean();
+    if (!item) return res.status(404).json({ error: 'Not found' });
+    res.json({ item: { ...item, id: item._id.toString() } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/documents/reorder', async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
+    const ops = orderedIds.map((id, idx) => ({
+      updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
+    }));
+    await DocModel.bulkWrite(ops);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/documents', async (req, res) => {
+  try {
+    const { name, content, fileType } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+    let slug = slugifyDocument(name);
+    const existing = await DocModel.findOne({ slug }).lean();
+    if (existing) slug = slug + '-' + Date.now();
+    const count = await DocModel.countDocuments();
+    const item = await DocModel.create({
+      name, slug, content: content || '', fileType: fileType || 'manual', order: count,
+    });
+    res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+const docsDir = path.join(__dirname, 'assets', 'documents');
+if (!fs.existsSync(docsDir)) fs.mkdirSync(docsDir, { recursive: true });
+app.use('/assets/documents', express.static(docsDir));
+
+const docStorage = multer.diskStorage({
+  destination: (req, file, cb) => { cb(null, docsDir); },
+  filename: (req, file, cb) => {
+    const safe = (req.body.name || 'document').replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_');
+    const ext = path.extname(file.originalname) || '';
+    cb(null, `${safe}_${Date.now()}${ext}`);
+  },
+});
+const docUpload = multer({ storage: docStorage });
+
+app.post('/api/documents/upload', docUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const name = req.body.name || path.parse(req.file.originalname).name;
+    let slug = slugifyDocument(name);
+    const existing = await DocModel.findOne({ slug }).lean();
+    if (existing) slug = slug + '-' + Date.now();
+
+    const ext = path.extname(req.file.originalname).toLowerCase().replace('.', '');
+    const fileUrl = `/assets/documents/${req.file.filename}`;
+    let content = '';
+    let fileType = ext || 'manual';
+
+    if (ext === 'docx') {
+      try {
+        const mammoth = require('mammoth');
+        const result = await mammoth.convertToHtml({
+          path: req.file.path,
+        }, {
+          convertImage: mammoth.images.imgElement(function (image) {
+            return image.read('base64').then(function (imageBuffer) {
+              return { src: 'data:' + image.contentType + ';base64,' + imageBuffer };
+            });
+          }),
+        });
+        content = result.value;
+        fileType = 'docx';
+      } catch (_) { fileType = 'docx'; }
+    }
+
+    const count = await DocModel.countDocuments();
+    const item = await DocModel.create({ name, slug, content, fileUrl, fileType, order: count });
+    res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/documents/:id', async (req, res) => {
+  try {
+    const { name, content, fileType } = req.body;
+    const update = {};
+    if (name !== undefined) {
+      update.name = name;
+      update.slug = slugifyDocument(name);
+      const existing = await DocModel.findOne({ slug: update.slug, _id: { $ne: req.params.id } }).lean();
+      if (existing) update.slug = update.slug + '-' + Date.now();
+    }
+    if (content !== undefined) update.content = content;
+    if (fileType !== undefined) update.fileType = fileType;
+    const item = await DocModel.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
+    if (!item) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true, item: { ...item, id: item._id.toString() } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/documents/:id', async (req, res) => {
+  try {
+    const item = await DocModel.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
+    if (!item) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // --------------- Trash Management ---------------
 
 app.get('/api/trash', async (req, res) => {
   try {
-    const [features, productConfigs, matrices, cloudInfos, deletedCombinations] = await Promise.all([
+    const [features, productConfigs, matrices, cloudInfos, deletedCombinations, documents] = await Promise.all([
       Feature.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
       ProductConfig.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
       CompatibilityMatrix.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
       CloudInfo.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
       DeletedCombination.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
+      DocModel.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
     ]);
     res.json({
       features: features.map(f => ({ ...mapFeature(f), deletedAt: f.deletedAt })),
       productConfigs: productConfigs.map(c => ({ id: c._id.toString(), name: c.name, combinations: c.combinations, deletedAt: c.deletedAt })),
       matrices: matrices.map(m => ({ id: m._id.toString(), name: m.name, slug: m.slug, deletedAt: m.deletedAt })),
       cloudInfos: cloudInfos.map(i => ({ id: i._id.toString(), name: i.name, slug: i.slug, deletedAt: i.deletedAt })),
+      documents: documents.map(d => ({ id: d._id.toString(), name: d.name, slug: d.slug, deletedAt: d.deletedAt })),
       combinations: deletedCombinations.map((c) => ({
         id: c._id.toString(),
         productType: c.productType,
@@ -1065,6 +1297,7 @@ app.put('/api/trash/restore/:type/:id', async (req, res) => {
     else if (type === 'productConfig') Model = ProductConfig;
     else if (type === 'compatibility') Model = CompatibilityMatrix;
     else if (type === 'cloudInfo') Model = CloudInfo;
+    else if (type === 'document') Model = DocModel;
     else return res.status(400).json({ error: 'Invalid type' });
 
     const doc = await Model.findByIdAndUpdate(id, { isDeleted: false, deletedAt: null }, { new: true });
@@ -1091,6 +1324,7 @@ app.delete('/api/trash/permanent/:type/:id', async (req, res) => {
     else if (type === 'productConfig') Model = ProductConfig;
     else if (type === 'compatibility') Model = CompatibilityMatrix;
     else if (type === 'cloudInfo') Model = CloudInfo;
+    else if (type === 'document') Model = DocModel;
     else return res.status(400).json({ error: 'Invalid type' });
 
     const doc = await Model.findById(id);

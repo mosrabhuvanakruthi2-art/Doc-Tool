@@ -3,6 +3,8 @@ import FeatureScopeForm from './FeatureScopeForm';
 import EditFeatureTab from './EditFeatureTab';
 import CompatibilityAdmin from './CompatibilityAdmin';
 import CloudInfoAdmin from './CloudInfoAdmin';
+import DocumentsAdmin from './DocumentsAdmin';
+import UserAdmin from './UserAdmin';
 import TrashAdmin from './TrashAdmin';
 
 function AdminPage() {
@@ -17,57 +19,36 @@ function AdminPage() {
     <div className="admin-page">
       <div className="admin-container">
         <div className="admin-tabs">
-          <button
-            className={`admin-tab ${activeTab === 'add' ? 'active' : ''}`}
-            onClick={() => setActiveTab('add')}
-          >
+          <button className={`admin-tab ${activeTab === 'add' ? 'active' : ''}`} onClick={() => setActiveTab('add')}>
             Add Feature
           </button>
-          <button
-            className={`admin-tab ${activeTab === 'edit' ? 'active' : ''}`}
-            onClick={() => setActiveTab('edit')}
-          >
+          <button className={`admin-tab ${activeTab === 'edit' ? 'active' : ''}`} onClick={() => setActiveTab('edit')}>
             Edit Feature
           </button>
-          <button
-            className={`admin-tab ${activeTab === 'compatibility' ? 'active' : ''}`}
-            onClick={() => setActiveTab('compatibility')}
-          >
+          <button className={`admin-tab ${activeTab === 'compatibility' ? 'active' : ''}`} onClick={() => setActiveTab('compatibility')}>
             Compatibility
           </button>
-          <button
-            className={`admin-tab ${activeTab === 'cloudinfo' ? 'active' : ''}`}
-            onClick={() => setActiveTab('cloudinfo')}
-          >
+          <button className={`admin-tab ${activeTab === 'cloudinfo' ? 'active' : ''}`} onClick={() => setActiveTab('cloudinfo')}>
             Cloud Info
           </button>
-          <button
-            className={`admin-tab admin-tab-trash ${activeTab === 'trash' ? 'active' : ''}`}
-            onClick={() => setActiveTab('trash')}
-          >
+          <button className={`admin-tab ${activeTab === 'documents' ? 'active' : ''}`} onClick={() => setActiveTab('documents')}>
+            Documents
+          </button>
+          <button className={`admin-tab ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}>
+            Users
+          </button>
+          <button className={`admin-tab admin-tab-trash ${activeTab === 'trash' ? 'active' : ''}`} onClick={() => setActiveTab('trash')}>
             Trash
           </button>
         </div>
 
-        {activeTab === 'add' && (
-          <FeatureScopeForm onSaved={handleSaved} />
-        )}
-
-        {activeTab === 'edit' && (
-          <EditFeatureTab refreshKey={refreshKey} onChanged={handleSaved} />
-        )}
-
-        {activeTab === 'compatibility' && (
-          <CompatibilityAdmin onChanged={handleSaved} />
-        )}
-
-        {activeTab === 'cloudinfo' && (
-          <CloudInfoAdmin onChanged={handleSaved} />
-        )}
-
-        {activeTab === 'trash' && (
-          <TrashAdmin onChanged={handleSaved} />
-        )}
+        {activeTab === 'add' && <FeatureScopeForm onSaved={handleSaved} />}
+        {activeTab === 'edit' && <EditFeatureTab refreshKey={refreshKey} onChanged={handleSaved} />}
+        {activeTab === 'compatibility' && <CompatibilityAdmin onChanged={handleSaved} />}
+        {activeTab === 'cloudinfo' && <CloudInfoAdmin onChanged={handleSaved} />}
+        {activeTab === 'documents' && <DocumentsAdmin onChanged={handleSaved} />}
+        {activeTab === 'users' && <UserAdmin />}
+        {activeTab === 'trash' && <TrashAdmin onChanged={handleSaved} />}
       </div>
     </div>
   );

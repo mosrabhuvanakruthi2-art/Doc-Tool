@@ -125,6 +125,9 @@ function EditFeatureTab({ refreshKey, onChanged }) {
   const [comboRenameSaving, setComboRenameSaving] = useState(false);
   const [showPTReorder, setShowPTReorder] = useState(false);
   const [showComboReorder, setShowComboReorder] = useState(false);
+  const [deletePTModal, setDeletePTModal] = useState(false);
+  const [deletePTInput, setDeletePTInput] = useState('');
+  const [deletePTSaving, setDeletePTSaving] = useState(false);
 
   const dragItem = useRef(null);
   const dragOverItem = useRef(null);
@@ -361,6 +364,35 @@ function EditFeatureTab({ refreshKey, onChanged }) {
     }
   };
 
+  const handleDeleteProductTypeEntirely = async () => {
+    const matchedConfig = configs.find(c => c.name === productType);
+    if (!matchedConfig) {
+      showToast('Unable to find selected product type.', 'error');
+      return;
+    }
+    setDeletePTSaving(true);
+    try {
+      const res = await fetch(`/api/product-config/${matchedConfig.id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Delete failed');
+      setFeatures([]);
+      setOriginalFeatures([]);
+      setProductType('');
+      setScope('');
+      setCombination('');
+      setDeletePTModal(false);
+      setDeletePTInput('');
+      setDeletePTConfirm(false);
+      await refresh();
+      showToast(`Product type "${matchedConfig.name}" moved to Trash.`);
+      if (onChanged) onChanged();
+    } catch (err) {
+      showToast('Delete failed: ' + err.message, 'error');
+    } finally {
+      setDeletePTSaving(false);
+    }
+  };
+
   const handleDeleteCombination = async () => {
     if (!combination) return;
     const matchedConfig = configs.find(c => c.name === productType);
@@ -568,7 +600,13 @@ function EditFeatureTab({ refreshKey, onChanged }) {
             {productType && scope && !deletePTConfirm && (
               <button className="btn-delete-inline" onClick={() => setDeletePTConfirm(true)} title={`Delete all ${scope === 'inscope' ? 'In Scope' : 'Out of Scope'} features for this product type`}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                Delete
+                Delete Features
+              </button>
+            )}
+            {productType && (
+              <button className="btn-delete-inline btn-delete-pt" onClick={() => { setDeletePTModal(true); setDeletePTInput(''); }} title="Delete this entire product type">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Delete Product Type
               </button>
             )}
           </div>
@@ -725,6 +763,30 @@ function EditFeatureTab({ refreshKey, onChanged }) {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Delete Product Type Confirmation Modal */}
+      {deletePTModal && (
+        <div className="permanent-delete-modal" onClick={() => { setDeletePTModal(false); setDeletePTInput(''); }}>
+          <div className="permanent-delete-card" onClick={e => e.stopPropagation()}>
+            <h4>Permanently Delete</h4>
+            <p>You are about to permanently delete <strong>&quot;{productType}&quot;</strong>. This action cannot be undone.</p>
+            <p>Type <strong>DELETE</strong> to confirm:</p>
+            <input
+              type="text"
+              value={deletePTInput}
+              onChange={e => setDeletePTInput(e.target.value)}
+              placeholder="Type DELETE"
+              autoFocus
+            />
+            <div className="permanent-delete-actions">
+              <button className="btn-permanent-confirm" onClick={handleDeleteProductTypeEntirely} disabled={deletePTInput !== 'DELETE' || deletePTSaving}>
+                {deletePTSaving ? 'Deleting...' : 'Delete Forever'}
+              </button>
+              <button className="btn-cancel" onClick={() => { setDeletePTModal(false); setDeletePTInput(''); }}>Cancel</button>
+            </div>
+          </div>
         </div>
       )}
 

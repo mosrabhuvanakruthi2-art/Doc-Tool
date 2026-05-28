@@ -8,8 +8,8 @@ export default defineConfig({
     host: true,
     allowedHosts: ['rookiest-unfrictionally-yi.ngrok-free.dev'],
     proxy: {
-      '/api': 'http://localhost:5000',
-      '/assets': 'http://localhost:5000',
+      '/api': 'http://localhost:5001',
+      '/assets': 'http://localhost:5001',
     },
   },
 });

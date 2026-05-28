@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { showToast } from './Toast';
 
 function TrashAdmin({ onChanged }) {
-  const [trash, setTrash] = useState({ features: [], productConfigs: [], matrices: [], cloudInfos: [], combinations: [] });
+  const [trash, setTrash] = useState({ features: [], productConfigs: [], matrices: [], cloudInfos: [], combinations: [], documents: [] });
   const [loading, setLoading] = useState(true);
   const [permanentDelete, setPermanentDelete] = useState(null);
   const [deleteInput, setDeleteInput] = useState('');
@@ -24,10 +24,10 @@ function TrashAdmin({ onChanged }) {
 
   const handleRestore = async (type, id, name) => {
     try {
-      const res = await fetch(`/api/trash/restore/${type}/${id}`, { method: 'PUT' });
+      const res = await fetch('/api/trash/restore/' + type + '/' + id, { method: 'PUT' });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      showToast(`"${name}" restored successfully!`);
+      showToast('"' + name + '" restored successfully!');
       await fetchTrash();
       if (onChanged) onChanged();
     } catch (err) {
@@ -43,10 +43,10 @@ function TrashAdmin({ onChanged }) {
     }
     const { type, id, name } = permanentDelete;
     try {
-      const res = await fetch(`/api/trash/permanent/${type}/${id}`, { method: 'DELETE' });
+      const res = await fetch('/api/trash/permanent/' + type + '/' + id, { method: 'DELETE' });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      showToast(`"${name}" permanently deleted!`);
+      showToast('"' + name + '" permanently deleted!');
       setPermanentDelete(null);
       setDeleteInput('');
       await fetchTrash();
@@ -67,10 +67,10 @@ function TrashAdmin({ onChanged }) {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
-  const totalItems = trash.features.length + trash.productConfigs.length + trash.matrices.length + trash.cloudInfos.length + (trash.combinations?.length || 0);
+  const totalItems = trash.features.length + trash.productConfigs.length + trash.matrices.length + trash.cloudInfos.length + (trash.combinations ? trash.combinations.length : 0) + (trash.documents ? trash.documents.length : 0);
 
   const renderSection = (title, items, type, getLabel) => {
-    if (items.length === 0) return null;
+    if (!items || items.length === 0) return null;
     return (
       <div className="trash-section">
         <h4 className="trash-section-title">{title} ({items.length})</h4>
@@ -107,23 +107,11 @@ function TrashAdmin({ onChanged }) {
         <div className="permanent-delete-modal">
           <div className="permanent-delete-card">
             <h4>Permanently Delete</h4>
-            <p>You are about to permanently delete <strong>"{permanentDelete.name}"</strong>. This action cannot be undone.</p>
+            <p>You are about to permanently delete <strong>&quot;{permanentDelete.name}&quot;</strong>. This action cannot be undone.</p>
             <p>Type <strong>DELETE</strong> to confirm:</p>
-            <input
-              type="text"
-              value={deleteInput}
-              onChange={e => setDeleteInput(e.target.value)}
-              placeholder="Type DELETE"
-              autoFocus
-            />
+            <input type="text" value={deleteInput} onChange={e => setDeleteInput(e.target.value)} placeholder="Type DELETE" autoFocus />
             <div className="permanent-delete-actions">
-              <button
-                className="btn-permanent-confirm"
-                onClick={handlePermanentDelete}
-                disabled={deleteInput !== 'DELETE'}
-              >
-                Delete Forever
-              </button>
+              <button className="btn-permanent-confirm" onClick={handlePermanentDelete} disabled={deleteInput !== 'DELETE'}>Delete Forever</button>
               <button className="btn-cancel" onClick={cancelPermanentDelete}>Cancel</button>
             </div>
           </div>
@@ -142,11 +130,12 @@ function TrashAdmin({ onChanged }) {
         </div>
       ) : (
         <>
-          {renderSection('Features', trash.features, 'feature', f => `${f.name} (${f.productType} / ${f.combination || 'N/A'} / ${f.scope})`)}
+          {renderSection('Features', trash.features, 'feature', f => f.name + ' (' + f.productType + ' / ' + (f.combination || 'N/A') + ' / ' + f.scope + ')')}
           {renderSection('Product Types', trash.productConfigs, 'productConfig', c => c.name)}
-          {renderSection('Combinations', trash.combinations || [], 'combination', c => `${c.productType} / ${c.combination}`)}
+          {renderSection('Combinations', trash.combinations || [], 'combination', c => c.productType + ' / ' + c.combination)}
           {renderSection('Compatibility Matrices', trash.matrices, 'compatibility', m => m.name)}
           {renderSection('Cloud Info', trash.cloudInfos, 'cloudInfo', i => i.name)}
+          {renderSection('Documents', trash.documents || [], 'document', d => d.name)}
         </>
       )}
     </div>

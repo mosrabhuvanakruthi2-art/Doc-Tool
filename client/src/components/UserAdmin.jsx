@@ -17,8 +17,46 @@ function UserAdmin() {
   const [form, setForm] = useState({ email: '', password: '', name: '', role: 'viewer', permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true } });
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [accessRequests, setAccessRequests] = useState([]);
+  const [respondingId, setRespondingId] = useState(null);
+  const [reqPage, setReqPage] = useState(1);
+  const [usersPage, setUsersPage] = useState(1);
+  const PAGE_SIZE = 10;
 
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+  const fetchAccessRequests = async () => {
+    try {
+      const res = await fetch('/api/access-requests', { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      setAccessRequests(data.requests || []);
+    } catch (_) {}
+  };
+
+  const handleApprove = async (id) => {
+    setRespondingId(id);
+    try {
+      const res = await fetch(`/api/access-requests/${id}/approve`, { method: 'PUT', headers });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showToast('Access approved — user can now view Documents');
+      fetchAccessRequests();
+      fetchUsers();
+    } catch (err) { showToast(err.message, 'error'); }
+    setRespondingId(null);
+  };
+
+  const handleDeny = async (id) => {
+    setRespondingId(id);
+    try {
+      const res = await fetch(`/api/access-requests/${id}/deny`, { method: 'PUT', headers });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showToast('Request denied');
+      fetchAccessRequests();
+    } catch (err) { showToast(err.message, 'error'); }
+    setRespondingId(null);
+  };
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -30,7 +68,7 @@ function UserAdmin() {
     setLoading(false);
   };
 
-  useEffect(() => { fetchUsers(); }, []);
+  useEffect(() => { fetchUsers(); fetchAccessRequests(); }, []);
 
   const resetForm = () => {
     setForm({ email: '', password: '', name: '', role: 'viewer', permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true } });
@@ -110,8 +148,98 @@ function UserAdmin() {
   };
 
   if (mode === 'list') {
+    const pendingRequests = accessRequests.filter(r => r.status === 'pending');
+
+    const reqTotalPages = Math.max(1, Math.ceil(accessRequests.length / PAGE_SIZE));
+    const pagedRequests = accessRequests.slice((reqPage - 1) * PAGE_SIZE, reqPage * PAGE_SIZE);
+
+    const usersTotalPages = Math.max(1, Math.ceil(users.length / PAGE_SIZE));
+    const pagedUsers = users.slice((usersPage - 1) * PAGE_SIZE, usersPage * PAGE_SIZE);
+
+    const Pagination = ({ page, totalPages, onPage }) => {
+      if (totalPages <= 1) return null;
+      const pages = [];
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+      return (
+        <div className="pagination">
+          <button className="pg-btn" onClick={() => onPage(page - 1)} disabled={page === 1}>&#8249;</button>
+          {pages.map(p => (
+            <button key={p} className={`pg-btn ${p === page ? 'pg-active' : ''}`} onClick={() => onPage(p)}>{p}</button>
+          ))}
+          <button className="pg-btn" onClick={() => onPage(page + 1)} disabled={page === totalPages}>&#8250;</button>
+        </div>
+      );
+    };
+
     return (
       <div className="user-admin">
+        {/* Access Requests Section */}
+        {accessRequests.length > 0 && (
+          <div className="access-requests-section">
+            <div className="access-requests-header">
+              <h3>
+                Documents Access Requests
+                {pendingRequests.length > 0 && (
+                  <span className="access-request-badge">{pendingRequests.length}</span>
+                )}
+              </h3>
+            </div>
+            <div className="access-requests-table-wrap">
+              <table className="user-admin-table">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Name</th>
+                    <th>Requested At</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedRequests.map(r => (
+                    <tr key={r._id}>
+                      <td>{r.email}</td>
+                      <td>{r.name || '—'}</td>
+                      <td>{new Date(r.requestedAt).toLocaleString()}</td>
+                      <td>
+                        <span className={`access-status-badge status-${r.status}`}>
+                          {r.status.charAt(0).toUpperCase() + r.status.slice(1)}
+                        </span>
+                      </td>
+                      <td className="user-actions-cell">
+                        {r.status === 'pending' ? (
+                          <>
+                            <button
+                              className="btn-approve"
+                              onClick={() => handleApprove(r._id)}
+                              disabled={respondingId === r._id}
+                            >
+                              {respondingId === r._id ? '...' : 'Approve'}
+                            </button>
+                            <button
+                              className="btn-deny"
+                              onClick={() => handleDeny(r._id)}
+                              disabled={respondingId === r._id}
+                            >
+                              Deny
+                            </button>
+                          </>
+                        ) : (
+                          <span className="access-responded-at">
+                            {r.respondedAt ? new Date(r.respondedAt).toLocaleDateString() : '—'}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Pagination page={reqPage} totalPages={reqTotalPages} onPage={p => setReqPage(Math.max(1, Math.min(p, reqTotalPages)))} />
+          </div>
+        )}
+
+        {/* Users Section */}
         <div className="user-admin-header">
           <h3>User Management</h3>
           <button className="btn-save" onClick={() => { resetForm(); setMode('create'); }}>+ New User</button>
@@ -132,7 +260,7 @@ function UserAdmin() {
                 </tr>
               </thead>
               <tbody>
-                {users.map(u => (
+                {pagedUsers.map(u => (
                   <tr key={u.id || u._id} className={!u.isActive ? 'user-row-inactive' : ''}>
                     <td>{u.email}</td>
                     <td>{u.name || '—'}</td>
@@ -164,6 +292,7 @@ function UserAdmin() {
                 ))}
               </tbody>
             </table>
+            <Pagination page={usersPage} totalPages={usersTotalPages} onPage={p => setUsersPage(Math.max(1, Math.min(p, usersTotalPages)))} />
           </div>
         )}
       </div>

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head><title>Authenticating...</title></head>
+<body>
+<script>
+  (function () {
+    try {
+      var hash = window.location.hash;
+      var query = window.location.search;
+      var raw = (hash && hash.length > 1) ? hash.substring(1)
+              : (query && query.length > 1) ? query.substring(1)
+              : null;
+      if (!raw) return;
+      var params = new URLSearchParams(raw);
+      var state = params.get('state');
+      if (!state) return;
+      var libraryStateBase64 = state.split('|')[0];
+      var libraryState = JSON.parse(atob(libraryStateBase64));
+      var channelId = libraryState && libraryState.id;
+      if (!channelId) return;
+      var channel = new BroadcastChannel(channelId);
+      channel.postMessage({ payload: raw, v: 1 });
+      channel.close();
+    } catch (e) {}
+    // Close the popup after sending the auth response
+    window.close();
+  })();
+</script>
+</body>
+</html>

@@ -401,47 +401,59 @@ function Sidebar() {
               </div>
             )}
 
-            {/* Documents dropdown section â€" no gap */}
-            {hasPermission('documents') && docItems.length > 0 && (
-              <div className="sidebar-nav-section">
-                <div className="sidebar-nav-header">
-                  <span className="sidebar-nav-label">Documents</span>
-                </div>
-                <ul className="sidebar-items">
-                  <li>
-                    <button
-                      className={`sidebar-product-btn ${docsExpanded ? 'active' : ''}`}
-                      onClick={handleDocsToggle}
-                    >
-                      <span className="sidebar-product-icon-label">
-                        {DOC_ICON}
-                        <span>Documents</span>
-                      </span>
+            {/* Documents – always visible; access-gated for users without permission */}
+            <div className="sidebar-nav-section">
+              <div className="sidebar-nav-header">
+                <span className="sidebar-nav-label">Documents</span>
+              </div>
+              <ul className="sidebar-items">
+                <li>
+                  <button
+                    className={`sidebar-product-btn ${docsExpanded || activeView === 'documents' ? 'active' : ''}`}
+                    onClick={() => {
+                      if (!hasPermission('documents')) {
+                        setExpandedProduct('');
+                        setCompatExpanded(false);
+                        setCloudInfoExpanded(false);
+                        setDocsExpanded(false);
+                        const params = new URLSearchParams();
+                        params.set('view', 'documents');
+                        setSearchParams(params);
+                        return;
+                      }
+                      handleDocsToggle();
+                    }}
+                  >
+                    <span className="sidebar-product-icon-label">
+                      {DOC_ICON}
+                      <span>Documents</span>
+                    </span>
+                    {hasPermission('documents') && (
                       <svg
                         className={`sidebar-product-icon ${docsExpanded ? 'expanded' : ''}`}
                         width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
                       >
                         <polyline points="6 9 12 15 18 9" />
                       </svg>
-                    </button>
-                    {docsExpanded && (
-                      <ul className="sidebar-combos">
-                        {docItems.map(item => (
-                          <li key={item._id}>
-                            <button
-                              className={`sidebar-combo-btn ${activeView === 'documents' && searchParams.get('doc') === item.slug ? 'active' : ''}`}
-                              onClick={() => handleDocClick(item.slug)}
-                            >
-                              {item.name}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
                     )}
-                  </li>
-                </ul>
-              </div>
-            )}
+                  </button>
+                  {hasPermission('documents') && docsExpanded && (
+                    <ul className="sidebar-combos">
+                      {docItems.map(item => (
+                        <li key={item._id}>
+                          <button
+                            className={`sidebar-combo-btn ${activeView === 'documents' && searchParams.get('doc') === item.slug ? 'active' : ''}`}
+                            onClick={() => handleDocClick(item.slug)}
+                          >
+                            {item.name}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              </ul>
+            </div>
           </>
         )}
 

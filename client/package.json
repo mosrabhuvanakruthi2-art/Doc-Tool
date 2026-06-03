@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@azure/msal-browser": "^5.11.0",
+    "@azure/msal-react": "^5.4.2",
     "docx": "^9.6.1",
     "file-saver": "^2.0.5",
     "html2pdf.js": "^0.14.0",

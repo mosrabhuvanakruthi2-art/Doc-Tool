@@ -1,7 +1,20 @@
+import { useState, useRef, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+
+function getInitials(name, email) {
+  if (name && name.trim()) {
+    const parts = name.trim().split(' ').filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return parts[0][0].toUpperCase();
+  }
+  if (email) return email[0].toUpperCase();
+  return 'U';
+}
 
 function Header({ darkMode, onToggleDark, isAdmin, onLogout, user }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef(null);
   const section = searchParams.get('section') || 'inscope';
 
   const handleSectionToggle = (value) => {
@@ -9,6 +22,16 @@ function Header({ darkMode, onToggleDark, isAdmin, onLogout, user }) {
     params.set('section', value);
     setSearchParams(params);
   };
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setDropdownOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   return (
     <header className="header">
@@ -22,18 +45,8 @@ function Header({ darkMode, onToggleDark, isAdmin, onLogout, user }) {
         <div className="header-center">
           {!searchParams.get('view') && searchParams.get('product') && (
             <div className="section-toggle">
-              <button
-                className={`toggle-btn ${section === 'inscope' ? 'active' : ''}`}
-                onClick={() => handleSectionToggle('inscope')}
-              >
-                Inscope
-              </button>
-              <button
-                className={`toggle-btn ${section === 'outscope' ? 'active' : ''}`}
-                onClick={() => handleSectionToggle('outscope')}
-              >
-                Outscope
-              </button>
+              <button className={`toggle-btn ${section === 'inscope' ? 'active' : ''}`} onClick={() => handleSectionToggle('inscope')}>Inscope</button>
+              <button className={`toggle-btn ${section === 'outscope' ? 'active' : ''}`} onClick={() => handleSectionToggle('outscope')}>Outscope</button>
             </div>
           )}
         </div>
@@ -58,16 +71,39 @@ function Header({ darkMode, onToggleDark, isAdmin, onLogout, user }) {
             </svg>
           )}
         </button>
-        {isAdmin && (
-          <Link to="/" className="header-nav-link">View Docs</Link>
+
+        {isAdmin && <Link to="/" className="header-nav-link">View Docs</Link>}
+
+        <span className="header-title">Migration Docs</span>
+
+        {onLogout && user && (
+          <div className="user-menu" ref={dropdownRef}>
+            <button className="user-avatar-btn" onClick={() => setDropdownOpen(v => !v)}>
+              <span className="user-avatar">{getInitials(user.name, user.email)}</span>
+            </button>
+            {dropdownOpen && (
+              <div className="user-dropdown">
+                <div className="user-dropdown-info">
+                  <span className="user-dropdown-name">{user.name || 'User'}</span>
+                  <span className="user-dropdown-email">{user.email}</span>
+                </div>
+                <div className="user-dropdown-divider" />
+                <button className="user-dropdown-logout" onClick={() => { setDropdownOpen(false); onLogout(); }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <polyline points="16 17 21 12 16 7" />
+                    <line x1="21" y1="12" x2="9" y2="12" />
+                  </svg>
+                  Log out
+                </button>
+              </div>
+            )}
+          </div>
         )}
-        {!isAdmin && user && (
-          <span className="header-user-info">{user.name || user.email}</span>
-        )}
-        {onLogout && (
+
+        {onLogout && !user && (
           <button className="header-logout-btn" onClick={onLogout}>Logout</button>
         )}
-        <span className="header-title">Migration Docs</span>
       </div>
     </header>
   );

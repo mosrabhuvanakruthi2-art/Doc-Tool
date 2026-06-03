@@ -3,6 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const dns = require('dns');
 const multer = require('multer');
@@ -16,6 +18,7 @@ const CloudInfo = require('./models/CloudInfo');
 const DeletedCombination = require('./models/DeletedCombination');
 const User = require('./models/User');
 const DocModel = require('./models/Document');
+const AccessRequest = require('./models/AccessRequest');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -75,10 +78,27 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.get('/api/auth/verify', (req, res) => {
+app.get('/api/auth/verify', async (req, res) => {
   const decoded = decodeToken(req);
   if (!decoded) return res.status(401).json({ error: 'Invalid or expired token' });
-  const perms = decoded.role === 'admin' ? FULL_PERMISSIONS : (decoded.permissions || FULL_PERMISSIONS);
+
+  // Admin email uses env credentials — no DB lookup needed
+  if (decoded.role === 'admin' && decoded.email?.toLowerCase() === ADMIN_EMAIL?.toLowerCase()) {
+    return res.json({ success: true, user: { email: decoded.email, name: decoded.name || 'Admin', role: 'admin', permissions: FULL_PERMISSIONS } });
+  }
+
+  // For all other users, fetch latest permissions from DB so hard-refresh picks up changes immediately
+  try {
+    const dbUser = await User.findOne({ email: decoded.email?.toLowerCase() });
+    if (dbUser) {
+      if (!dbUser.isActive) return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
+      const perms = dbUser.role === 'admin' ? FULL_PERMISSIONS : (dbUser.permissions || {});
+      return res.json({ success: true, user: { email: dbUser.email, name: dbUser.name || decoded.name || '', role: dbUser.role, permissions: perms } });
+    }
+  } catch (_) {}
+
+  // Fallback to JWT if DB unavailable
+  const perms = decoded.role === 'admin' ? FULL_PERMISSIONS : (decoded.permissions || {});
   res.json({ success: true, user: { email: decoded.email, name: decoded.name || '', role: decoded.role, permissions: perms } });
 });
 
@@ -100,6 +120,323 @@ app.get('/api/admin/verify', (req, res) => {
   const decoded = decodeToken(req);
   if (!decoded) return res.status(401).json({ error: 'Invalid or expired token' });
   res.json({ success: true, email: decoded.email });
+});
+
+function graphRequest(accessToken) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'graph.microsoft.com',
+      path: '/v1.0/me',
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    };
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(body) }); }
+        catch { resolve({ status: res.statusCode, data: body }); }
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function httpsPost(hostname, path, body) {
+  return new Promise((resolve, reject) => {
+    const data = new URLSearchParams(body).toString();
+    const options = {
+      hostname, path, method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(data) },
+    };
+    const req = https.request(options, (res) => {
+      let raw = '';
+      res.on('data', c => raw += c);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(raw) }); }
+        catch { resolve({ status: res.statusCode, data: raw }); }
+      });
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+app.post('/api/auth/microsoft/exchange', async (req, res) => {
+  const { code, verifier, redirectUri } = req.body;
+  if (!code || !verifier || !redirectUri) return res.status(400).json({ error: 'code, verifier and redirectUri are required' });
+
+  const tenantId = process.env.AZURE_TENANT_ID || '66d8848d-26b6-4147-8124-127624d7b3a6';
+  const clientId = process.env.AZURE_CLIENT_ID || '861e696d-f41c-41ee-a7c2-c838fd185d6d';
+
+  try {
+    const tokenBody = {
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+    };
+    const clientSecret = process.env.AZURE_CLIENT_SECRET;
+    if (clientSecret && clientSecret !== 'paste-your-secret-here') {
+      tokenBody.client_secret = clientSecret;
+    }
+    const tokenRes = await httpsPost('login.microsoftonline.com', `/${tenantId}/oauth2/v2.0/token`, tokenBody);
+
+    if (tokenRes.status !== 200 || !tokenRes.data.access_token) {
+      return res.status(401).json({ error: tokenRes.data.error_description || 'Token exchange failed' });
+    }
+
+    const graph = await graphRequest(tokenRes.data.access_token);
+    if (graph.status !== 200) return res.status(401).json({ error: 'Could not fetch user from Microsoft Graph' });
+
+    const email = ((graph.data.mail || graph.data.userPrincipalName) || '').toLowerCase().trim();
+    const name = graph.data.displayName || '';
+    if (!email) return res.status(400).json({ error: 'Could not retrieve email from Microsoft account' });
+
+    const isAdminEmail = email === ADMIN_EMAIL?.toLowerCase().trim();
+    let role = isAdminEmail ? 'admin' : 'viewer';
+    const DEFAULT_MS_PERMISSIONS = { productTypes: true, compatibility: true, cloudInfo: true, documents: false };
+    let permissions = isAdminEmail ? FULL_PERMISSIONS : DEFAULT_MS_PERMISSIONS;
+
+    try {
+      let dbUser = await User.findOne({ email });
+      if (dbUser) {
+        if (!dbUser.isActive) return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
+        role = dbUser.role;
+        permissions = dbUser.role === 'admin' ? FULL_PERMISSIONS : (dbUser.permissions || DEFAULT_MS_PERMISSIONS);
+      } else if (!isAdminEmail) {
+        // Create DB record for new MS user so verify can always read fresh permissions
+        dbUser = await User.create({
+          email,
+          name,
+          role: 'viewer',
+          permissions: DEFAULT_MS_PERMISSIONS,
+          password: crypto.randomBytes(32).toString('hex'), // random — MS login only, never used
+          isActive: true,
+        });
+      }
+    } catch {}
+
+    const payload = { email, name, role, permissions };
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+    res.json({ success: true, token, user: { email, name, role, permissions } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/microsoft', async (req, res) => {
+  const { accessToken } = req.body;
+  if (!accessToken) return res.status(400).json({ error: 'Access token required' });
+
+  try {
+    const graph = await graphRequest(accessToken);
+    if (graph.status !== 200) return res.status(401).json({ error: 'Invalid Microsoft token' });
+
+    const email = ((graph.data.mail || graph.data.userPrincipalName) || '').toLowerCase().trim();
+    const name = graph.data.displayName || '';
+
+    if (!email) return res.status(400).json({ error: 'Could not retrieve email from Microsoft account' });
+
+    const isAdminEmail = email === ADMIN_EMAIL?.toLowerCase().trim();
+    let role = isAdminEmail ? 'admin' : 'viewer';
+    let permissions = FULL_PERMISSIONS;
+
+    try {
+      const dbUser = await User.findOne({ email });
+      if (dbUser) {
+        if (!dbUser.isActive) return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
+        role = dbUser.role;
+        permissions = dbUser.role === 'admin' ? FULL_PERMISSIONS : (dbUser.permissions || FULL_PERMISSIONS);
+      }
+    } catch {}
+
+    const payload = { email, name, role, permissions };
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+    res.json({ success: true, token, user: { email, name, role, permissions } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --------------- Email via Microsoft Graph API ---------------
+
+function httpsPostJson(hostname, path, body, bearerToken) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const options = {
+      hostname, path, method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data),
+        ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+      },
+    };
+    const req = https.request(options, (res) => {
+      let raw = '';
+      res.on('data', c => raw += c);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: raw ? JSON.parse(raw) : {} }); }
+        catch { resolve({ status: res.statusCode, data: raw }); }
+      });
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+async function getGraphAccessToken() {
+  const tenantId = process.env.AZURE_TENANT_ID;
+  const clientId = process.env.AZURE_CLIENT_ID;
+  const clientSecret = process.env.AZURE_CLIENT_SECRET;
+
+  if (!tenantId || !clientId || !clientSecret) {
+    throw new Error('Azure credentials not configured in server .env');
+  }
+
+  const result = await httpsPost('login.microsoftonline.com', `/${tenantId}/oauth2/v2.0/token`, {
+    grant_type: 'client_credentials',
+    client_id: clientId,
+    client_secret: clientSecret,
+    scope: 'https://graph.microsoft.com/.default',
+  });
+
+  if (result.status !== 200 || !result.data.access_token) {
+    throw new Error(result.data.error_description || 'Failed to get Graph access token');
+  }
+  return result.data.access_token;
+}
+
+async function sendMail(to, subject, htmlBody) {
+  try {
+    const senderEmail = 'bhuvana.mosra@cloudfuze.com';
+    const token = await getGraphAccessToken();
+
+    const result = await httpsPostJson(
+      'graph.microsoft.com',
+      `/v1.0/users/${encodeURIComponent(senderEmail)}/sendMail`,
+      {
+        message: {
+          subject,
+          body: { contentType: 'HTML', content: htmlBody },
+          toRecipients: [{ emailAddress: { address: to } }],
+        },
+        saveToSentItems: false,
+      },
+      token
+    );
+
+    if (result.status !== 202 && result.status !== 200) {
+      console.error('Graph sendMail error:', result.status, result.data);
+    } else {
+      console.log(`Email sent via Graph to ${to}`);
+    }
+  } catch (err) {
+    console.error('sendMail error:', err.message);
+  }
+}
+
+// --------------- Access Requests ---------------
+
+app.post('/api/access-requests', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    let email = '', name = '';
+    if (authHeader) {
+      try {
+        const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        email = decoded.email || '';
+        name = decoded.name || '';
+      } catch {}
+    }
+    if (!email) return res.status(401).json({ error: 'Authentication required' });
+
+    const existing = await AccessRequest.findOne({ email, status: 'pending' });
+    if (existing) return res.status(400).json({ error: 'You already have a pending access request' });
+
+    const request = await AccessRequest.create({ email, name });
+
+    // Notify admin via email
+    await sendMail(
+      ADMIN_EMAIL,
+      `Documents Access Request from ${name || email}`,
+      `<p><strong>${name || email}</strong> (${email}) has requested access to the <strong>Documents</strong> tab on Migration Docs.</p>
+       <p>Log in to the <a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}/admin">Admin Panel → Users</a> to approve or deny this request.</p>`
+    );
+
+    res.json({ success: true, requestId: request._id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/access-requests', requireAdmin, async (req, res) => {
+  try {
+    const requests = await AccessRequest.find().sort({ requestedAt: -1 }).lean();
+    res.json({ requests });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/access-requests/:id/approve', requireAdmin, async (req, res) => {
+  try {
+    const request = await AccessRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ error: 'Request not found' });
+
+    request.status = 'approved';
+    request.respondedAt = new Date();
+    await request.save();
+
+    // Update user permissions in DB (create if missing — safety net)
+    const user = await User.findOne({ email: request.email });
+    if (user) {
+      user.permissions = { ...user.permissions, documents: true };
+      await user.save();
+    } else {
+      await User.create({
+        email: request.email,
+        name: request.name || '',
+        role: 'viewer',
+        permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true },
+        password: crypto.randomBytes(32).toString('hex'),
+        isActive: true,
+      });
+    }
+
+    // Notify user
+    await sendMail(
+      request.email,
+      'Documents Access Approved – Migration Docs',
+      `<p>Hi ${request.name || request.email},</p>
+       <p>Your request to access the <strong>Documents</strong> tab on Migration Docs has been <strong>approved</strong>.</p>
+       <p><a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}">Click here to access Migration Docs</a></p>`
+    );
+
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/access-requests/:id/deny', requireAdmin, async (req, res) => {
+  try {
+    const request = await AccessRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ error: 'Request not found' });
+
+    request.status = 'denied';
+    request.respondedAt = new Date();
+    await request.save();
+
+    await sendMail(
+      request.email,
+      'Documents Access Request – Migration Docs',
+      `<p>Hi ${request.name || request.email},</p>
+       <p>Your request to access the <strong>Documents</strong> tab has been reviewed. Please contact your administrator for more information.</p>`
+    );
+
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // --------------- User Management (Admin only) ---------------

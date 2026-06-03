@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, useSearchParams } from 'react-router-dom';
+import { startMicrosoftLogin } from './msalOauth';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import FeatureTable from './components/FeatureTable';
@@ -10,49 +11,56 @@ import AdminPage from './components/AdminPage';
 import AdminLogin from './components/AdminLogin';
 import ToastContainer from './components/Toast';
 import CfLoader from './components/CfLoader';
+import DocumentAccessRequest from './components/DocumentAccessRequest';
 import { useAuth } from './AuthContext';
 
-function DocsLogin() {
-  const { login } = useAuth();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+const AZURE_CLIENT_ID = import.meta.env.VITE_AZURE_CLIENT_ID || '';
+const MS_CONFIGURED = AZURE_CLIENT_ID && !AZURE_CLIENT_ID.includes('your-azure');
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      await login(email.trim(), password);
-    } catch (err) {
-      setError(err.message || 'Login failed');
+function DocsLogin() {
+  const { redirectError, clearRedirectError } = useAuth();
+  const [error, setError] = useState('');
+
+  const handleMicrosoftLogin = () => {
+    if (!MS_CONFIGURED) {
+      setError('Microsoft login is not configured. Contact administrator.');
+      return;
     }
-    setLoading(false);
+    startMicrosoftLogin();
   };
 
   return (
-    <div className="admin-login-page">
-      <div className="admin-login-card">
-        <div className="admin-login-header">
-          <img src="/cloudfuze-logo.png" alt="CloudFuze" className="admin-login-logo" />
-          <h2>Migration Docs</h2>
-          <p>Sign in to access documentation</p>
+    <div className="ms-login-page">
+      <div className="ms-login-card">
+        <div className="ms-login-header">
+          <img src="/cloudfuze-logo.png" alt="CloudFuze" className="ms-login-logo" />
+          <h1 className="ms-login-title">Migration Docs</h1>
         </div>
-        <form onSubmit={handleSubmit} className="admin-login-form">
-          {error && <div className="admin-login-error">{error}</div>}
-          <div className="form-group">
-            <label>Email</label>
-            <input type="email" placeholder="Enter your email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
-          </div>
-          <div className="form-group">
-            <label>Password</label>
-            <input type="password" placeholder="Enter your password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-          </div>
-          <button type="submit" className="admin-login-btn" disabled={loading}>
-            {loading ? 'Signing in...' : 'Sign In'}
+
+        <div className="ms-login-body">
+          <h2 className="ms-login-heading">Sign in to your account</h2>
+          <p className="ms-login-sub">Use your CloudFuze Microsoft account</p>
+
+          {(error || redirectError) && (
+            <div className="ms-login-error" onClick={clearRedirectError}>
+              {error || redirectError}
+            </div>
+          )}
+
+          <button className="ms-btn" onClick={handleMicrosoftLogin}>
+            <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+              <rect x="1" y="1" width="9" height="9" fill="#F25022" />
+              <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
+              <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
+              <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
+            </svg>
+            Sign in with Microsoft
           </button>
-        </form>
+        </div>
+
+        <div className="ms-login-footer">
+          © 2026 CloudFuze · Migration Documentation
+        </div>
       </div>
     </div>
   );
@@ -97,6 +105,7 @@ function AdminRoute({ darkMode, setDarkMode }) {
 
 function MainContent() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { hasPermission } = useAuth();
   const view = searchParams.get('view') || '';
   const matrixSlug = searchParams.get('matrix') || '';
   const infoSlug = searchParams.get('info') || '';
@@ -112,7 +121,10 @@ function MainContent() {
 
   if (view === 'compatibility' && matrixSlug) return <CompatibilityTable matrixSlug={matrixSlug} />;
   if (view === 'cloudinfo' && infoSlug) return <CloudInfoPage slug={infoSlug} />;
-  if (view === 'documents' && docSlug) return <DocumentPage slug={docSlug} />;
+  if (view === 'documents') {
+    if (!hasPermission('documents')) return <DocumentAccessRequest />;
+    if (docSlug) return <DocumentPage slug={docSlug} />;
+  }
   return <FeatureTable />;
 }
 

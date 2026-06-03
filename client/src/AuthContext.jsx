@@ -2,10 +2,11 @@ import { createContext, useContext, useState, useEffect, useCallback } from 'rea
 
 const AuthContext = createContext(null);
 
-export function AuthProvider({ children }) {
+export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(sessionStorage.getItem('docs_token') || '');
   const [loading, setLoading] = useState(true);
+  const [redirectError, setRedirectError] = useState(msRedirectError || null);
 
   const verify = useCallback(async (t) => {
     if (!t) { setUser(null); setLoading(false); return; }
@@ -25,7 +26,16 @@ export function AuthProvider({ children }) {
     setLoading(false);
   }, []);
 
-  useEffect(() => { verify(token); }, [token, verify]);
+  useEffect(() => {
+    if (msRedirectToken) {
+      // msRedirectToken is already our JWT (exchanged in main.jsx)
+      sessionStorage.setItem('docs_token', msRedirectToken);
+      setToken(msRedirectToken);
+      verify(msRedirectToken);
+    } else {
+      verify(token);
+    }
+  }, []);
 
   const login = async (email, password) => {
     const res = await fetch('/api/auth/login', {
@@ -35,6 +45,20 @@ export function AuthProvider({ children }) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Login failed');
+    sessionStorage.setItem('docs_token', data.token);
+    setToken(data.token);
+    setUser(data.user);
+    return data.user;
+  };
+
+  const loginWithMicrosoft = async (accessToken) => {
+    const res = await fetch('/api/auth/microsoft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessToken }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Microsoft login failed');
     sessionStorage.setItem('docs_token', data.token);
     setToken(data.token);
     setUser(data.user);
@@ -54,7 +78,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, hasPermission }}>
+    <AuthContext.Provider value={{ user, token, loading, login, loginWithMicrosoft, logout, hasPermission, redirectError, clearRedirectError: () => setRedirectError(null) }}>
       {children}
     </AuthContext.Provider>
   );

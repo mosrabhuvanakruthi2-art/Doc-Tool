@@ -52,6 +52,8 @@ async function buildImageParagraph(src) {
   }
 }
 
+const BLOCK_TAGS = new Set(['div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'table', 'blockquote', 'section', 'article', 'pre']);
+
 async function parseHtmlToDocxChildren(html) {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(html, 'text/html');
@@ -70,6 +72,13 @@ async function parseHtmlToDocxChildren(html) {
           style.href = cur.getAttribute('href');
           style.color = '0563C1';
           style.underline = true;
+        }
+        // Handle inline styles produced by contentEditable execCommand
+        const cs = cur.style;
+        if (cs) {
+          if (cs.fontWeight === 'bold' || Number(cs.fontWeight) >= 600) style.bold = true;
+          if (cs.fontStyle === 'italic') style.italic = true;
+          if (cs.textDecoration && cs.textDecoration.includes('underline')) style.underline = true;
         }
       }
       cur = cur.parentNode;
@@ -138,22 +147,25 @@ async function parseHtmlToDocxChildren(html) {
         spacing: { before: 160, after: 80 },
       }));
     } else if (tag === 'p' || tag === 'div' || tag === 'section' || tag === 'article') {
-      const { runs, images } = collectInlineRuns(node);
+      // If this container holds block-level children (nested divs, headings, lists, etc.),
+      // recurse into them to preserve their structure. Flattening via collectInlineRuns
+      // would merge all nested text into one paragraph, destroying order and formatting.
+      const hasBlockChild = Array.from(node.childNodes).some(
+        c => c.nodeType === Node.ELEMENT_NODE && BLOCK_TAGS.has(c.tagName.toLowerCase())
+      );
 
-      if (runs.length > 0 && runs.some((r) => r.root && r.root[1])) {
-        children.push(new Paragraph({ children: runs, spacing: { after: 120 } }));
-      } else if (runs.length > 0) {
-        children.push(new Paragraph({ children: runs, spacing: { after: 120 } }));
-      }
-
-      for (const img of images) {
-        const para = await buildImageParagraph(img.src);
-        if (para) children.push(para);
-      }
-
-      if (runs.length === 0 && images.length === 0) {
+      if (hasBlockChild) {
         for (const child of node.childNodes) {
           await processNode(child);
+        }
+      } else {
+        const { runs, images } = collectInlineRuns(node);
+        if (runs.length > 0) {
+          children.push(new Paragraph({ children: runs, spacing: { after: 120 } }));
+        }
+        for (const img of images) {
+          const para = await buildImageParagraph(img.src);
+          if (para) children.push(para);
         }
       }
     } else if (tag === 'img') {

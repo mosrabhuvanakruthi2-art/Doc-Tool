@@ -25,7 +25,7 @@ function AdminLogin({ onLogin }) {
         return;
       }
 
-      sessionStorage.setItem('admin_token', data.token);
+      localStorage.setItem('admin_token', data.token);
       onLogin(data.token);
     } catch (err) {
       setError('Server unavailable. Please try again.');

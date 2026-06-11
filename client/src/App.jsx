@@ -67,22 +67,21 @@ function DocsLogin() {
 }
 
 function AdminRoute({ darkMode, setDarkMode }) {
-  const [token, setToken] = useState(sessionStorage.getItem('admin_token') || '');
+  const [token, setToken] = useState(localStorage.getItem('admin_token') || '');
   const [verified, setVerified] = useState(false);
   const [checking, setChecking] = useState(true);
-
   useEffect(() => {
     if (!token) { setChecking(false); setVerified(false); return; }
     fetch('/api/admin/verify', { headers: { Authorization: 'Bearer ' + token } })
       .then((res) => {
         if (res.ok) { setVerified(true); }
-        else { sessionStorage.removeItem('admin_token'); setToken(''); setVerified(false); }
+        else { localStorage.removeItem('admin_token'); setToken(''); setVerified(false); }
       })
       .catch(() => { setVerified(false); })
       .finally(() => setChecking(false));
   }, [token]);
 
-  const handleLogout = () => { sessionStorage.removeItem('admin_token'); setToken(''); setVerified(false); };
+  const handleLogout = () => { localStorage.removeItem('admin_token'); setToken(''); setVerified(false); };
 
   if (checking) {
     return (

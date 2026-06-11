@@ -9,7 +9,7 @@ const PERM_KEYS = [
 ];
 
 function UserAdmin() {
-  const token = sessionStorage.getItem('admin_token') || '';
+  const token = localStorage.getItem('admin_token') || '';
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState('list');
@@ -54,6 +54,19 @@ function UserAdmin() {
       if (!res.ok) throw new Error(data.error);
       showToast('Request denied');
       fetchAccessRequests();
+    } catch (err) { showToast(err.message, 'error'); }
+    setRespondingId(null);
+  };
+
+  const handleRevoke = async (id) => {
+    setRespondingId(id);
+    try {
+      const res = await fetch(`/api/access-requests/${id}/revoke`, { method: 'PUT', headers });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showToast('Access revoked — user can no longer view Documents');
+      fetchAccessRequests();
+      fetchUsers();
     } catch (err) { showToast(err.message, 'error'); }
     setRespondingId(null);
   };
@@ -222,6 +235,19 @@ function UserAdmin() {
                               disabled={respondingId === r._id}
                             >
                               Deny
+                            </button>
+                          </>
+                        ) : r.status === 'approved' ? (
+                          <>
+                            <span className="access-responded-at">
+                              {r.respondedAt ? new Date(r.respondedAt).toLocaleDateString() : '—'}
+                            </span>
+                            <button
+                              className="btn-revoke"
+                              onClick={() => handleRevoke(r._id)}
+                              disabled={respondingId === r._id}
+                            >
+                              {respondingId === r._id ? '...' : 'Revoke'}
                             </button>
                           </>
                         ) : (

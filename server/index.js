@@ -355,17 +355,25 @@ app.post('/api/access-requests', async (req, res) => {
     }
     if (!email) return res.status(401).json({ error: 'Authentication required' });
 
-    const existing = await AccessRequest.findOne({ email, status: 'pending' });
-    if (existing) return res.status(400).json({ error: 'You already have a pending access request' });
+    const existing = await AccessRequest.findOne({ email }).sort({ requestedAt: -1 });
+    if (existing) {
+      if (existing.status === 'pending') return res.status(400).json({ error: 'You already have a pending access request' });
+      if (existing.status === 'approved') return res.status(400).json({ error: 'You already have access to the Documents tab' });
+      // denied or revoked — reset the existing record to pending instead of creating a duplicate
+      existing.status = 'pending';
+      existing.requestedAt = new Date();
+      existing.respondedAt = undefined;
+      await existing.save();
+    }
 
-    const request = await AccessRequest.create({ email, name });
+    const request = existing || await AccessRequest.create({ email, name });
 
     // Notify admin via email
     await sendMail(
       ADMIN_EMAIL,
       `Documents Access Request from ${name || email}`,
       `<p><strong>${name || email}</strong> (${email}) has requested access to the <strong>Documents</strong> tab on Migration Docs.</p>
-       <p>Log in to the <a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}/admin">Admin Panel → Users</a> to approve or deny this request.</p>`
+       <p>Log in to the <a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}/admin?tab=users">Admin Panel → Users</a> to approve or deny this request.</p>`
     );
 
     res.json({ success: true, requestId: request._id });
@@ -430,10 +438,31 @@ app.put('/api/access-requests/:id/deny', requireAdmin, async (req, res) => {
 
     await sendMail(
       request.email,
-      'Documents Access Request – Migration Docs',
+      'Documents Access Denied – Migration Docs',
       `<p>Hi ${request.name || request.email},</p>
-       <p>Your request to access the <strong>Documents</strong> tab has been reviewed. Please contact your administrator for more information.</p>`
+       <p>Your request to access the <strong>Documents</strong> tab on Migration Docs has been <strong>denied</strong>.</p>
+       <p>If you believe this is a mistake, please contact your administrator.</p>`
     );
+
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/access-requests/:id/revoke', requireAdmin, async (req, res) => {
+  try {
+    const request = await AccessRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ error: 'Request not found' });
+    if (request.status !== 'approved') return res.status(400).json({ error: 'Only approved requests can be revoked' });
+
+    request.status = 'revoked';
+    request.respondedAt = new Date();
+    await request.save();
+
+    const user = await User.findOne({ email: request.email });
+    if (user) {
+      user.permissions = { ...user.permissions, documents: false };
+      await user.save();
+    }
 
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }

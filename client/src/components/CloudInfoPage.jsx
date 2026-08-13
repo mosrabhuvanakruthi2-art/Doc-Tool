@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import CfLoader from './CfLoader';
+import UpdatedOn from './UpdatedOn';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
 
@@ -311,9 +312,18 @@ function CloudInfoPage({ slug }) {
     <div className="cloud-info-page cloud-info-page-full">
       <div className="cloud-info-page-header">
         <h2 className="cloud-info-page-title">{item.name}</h2>
-        <button className="btn-export-cloud-info" onClick={handleExport} disabled={exporting}>
-          {exporting ? 'Exporting...' : 'Download Doc'}
-        </button>
+        <div className="cloud-info-header-actions">
+          <UpdatedOn
+            createdAt={item.createdAt}
+            updatedAt={item.updatedAt}
+            entityType="cloudInfo"
+            entityId={item._id || item.id}
+            entityName={item.name}
+          />
+          <button className="btn-export-cloud-info" onClick={handleExport} disabled={exporting}>
+            {exporting ? 'Exporting...' : 'Download Doc'}
+          </button>
+        </div>
       </div>
       <div
         className="cloud-info-page-content"

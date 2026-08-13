@@ -7,6 +7,7 @@ import SearchBar from './SearchBar';
 import FilterTags from './FilterTags';
 import DocumentView from './DocumentView';
 import CfLoader from './CfLoader';
+import UpdatedOn from './UpdatedOn';
 
 function WelcomePage() {
   const [stats, setStats] = useState({ productTypes: 0, combinations: 0, compatibility: 0, cloudInfo: 0 });
@@ -176,6 +177,7 @@ function FeatureTable() {
   const [loading, setLoading] = useState(false);
   const [expandedRow, setExpandedRow] = useState(null);
   const [isOffline, setIsOffline] = useState(false);
+  const [lastActivity, setLastActivity] = useState(null);
   const [lightboxSrc, setLightboxSrc] = useState(null);
   const [showDocView, setShowDocView] = useState(false);
   const [downloading, setDownloading] = useState('');
@@ -223,6 +225,7 @@ function FeatureTable() {
       const data = await res.json();
       setFeatures(data.features || []);
       setTags(data.tags || ['All']);
+      setLastActivity(data.lastActivity || null);
       setIsOffline(false);
 
       try {
@@ -235,6 +238,7 @@ function FeatureTable() {
         const data = JSON.parse(cached);
         setFeatures(data.features || []);
         setTags(data.tags || ['All']);
+        setLastActivity(data.lastActivity || null);
         setIsOffline(true);
       }
     }
@@ -380,6 +384,12 @@ function FeatureTable() {
           {scopeLabel}
         </h1>
         <div className="page-title-actions">
+          <UpdatedOn
+            createdAt={lastActivity?.createdAt}
+            updatedAt={lastActivity?.updatedAt}
+            scope={{ productType, combination, section }}
+            scopeTitle={`${scopeLabel}${section ? ` · ${section}` : ''}`}
+          />
           {features.length > 0 && (
             <>
               <button className="btn-export-sm" onClick={downloadDoc} disabled={!!downloading} title="Download Document">

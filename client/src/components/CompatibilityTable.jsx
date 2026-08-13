@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import CfLoader from './CfLoader';
+import UpdatedOn from './UpdatedOn';
 import * as XLSX from 'xlsx';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
@@ -182,6 +183,13 @@ function CompatibilityTable({ matrixSlug }) {
       <div className="compat-header-row">
         <h1 className="compat-title">{name}</h1>
         <div className="compat-header-actions">
+          <UpdatedOn
+            createdAt={matrix.createdAt}
+            updatedAt={matrix.updatedAt}
+            entityType="compatibility"
+            entityId={matrix._id || matrix.id}
+            entityName={name}
+          />
           {hasDescriptions && (
             <button
               className="btn-toggle-desc"

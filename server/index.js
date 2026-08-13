@@ -19,6 +19,9 @@ const DeletedCombination = require('./models/DeletedCombination');
 const User = require('./models/User');
 const DocModel = require('./models/Document');
 const AccessRequest = require('./models/AccessRequest');
+const Revision = require('./models/Revision');
+const { buildChanges, buildInitialChanges } = require('./utils/revisionDiff');
+const { buildFieldChains } = require('./utils/revisionHistory');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -759,6 +762,7 @@ app.post('/api/product-config', async (req, res) => {
     const maxOrder = await ProductConfig.findOne().sort({ order: -1 }).lean();
     const order = maxOrder ? (maxOrder.order || 0) + 1 : 0;
     const config = await ProductConfig.create({ name, combinations: combinations || [], featureListUrl: featureListUrl || '', order });
+    await recordLifecycle('productConfig', config.toObject(), 'created');
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations, featureListUrl: config.featureListUrl, order: config.order } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -786,8 +790,10 @@ app.put('/api/product-config/:id', async (req, res) => {
     if (name !== undefined) update.name = name;
     if (combinations !== undefined) update.combinations = combinations;
     if (featureListUrl !== undefined) update.featureListUrl = featureListUrl;
+    const before = await ProductConfig.findById(req.params.id).lean();
     const config = await ProductConfig.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!config) return res.status(404).json({ error: 'Not found' });
+    await recordRevision('productConfig', before, config);
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations, featureListUrl: config.featureListUrl, order: config.order } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -958,7 +964,9 @@ app.delete('/api/features/by-scope', async (req, res) => {
     if (!productType || !scope) return res.status(400).json({ error: 'productType and scope are required' });
     const filter = { productType, scope, isDeleted: { $ne: true } };
     if (combination) filter.combination = combination;
+    const affected = await Feature.find(filter).select('_id name').lean();
     const result = await Feature.updateMany(filter, { isDeleted: true, deletedAt: new Date() });
+    await recordRevisions('feature', affected.map(doc => ({ after: doc })), 'deleted');
     res.json({ success: true, deletedCount: result.modifiedCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1061,13 +1069,30 @@ app.get('/api/features', async (req, res) => {
     if (pt) tagFilter.productType = pt;
     if (scope) tagFilter.scope = scope;
     if (combination) tagFilter.combination = combination;
-    const allFeatures = await Feature.find(tagFilter).select('family').lean();
+    const allFeatures = await Feature.find(tagFilter).select('family name updatedAt createdAt').lean();
     const allTags = new Set();
-    allFeatures.forEach(f => { if (f.family) allTags.add(f.family); });
+    // Most recent activity across the whole scope — built from tagFilter, which ignores
+    // search/tag, so the date stays stable while the user filters. Both stamps are sent so
+    // the client can tell a creation (createdAt === updatedAt) from a later edit.
+    let newest = null;
+    allFeatures.forEach(f => {
+      if (f.family) allTags.add(f.family);
+      const stamp = f.updatedAt || f.createdAt;
+      if (!stamp) return;
+      const best = newest && (newest.updatedAt || newest.createdAt);
+      if (!best || stamp > best) newest = f;
+    });
 
     res.json({
       features: features.map(mapFeature),
       tags: ['All', ...Array.from(allTags).sort()],
+      lastActivity: newest ? {
+        createdAt: newest.createdAt,
+        updatedAt: newest.updatedAt,
+        entityType: 'feature',
+        entityId: newest._id.toString(),
+        entityName: newest.name,
+      } : null,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1106,6 +1131,7 @@ app.post('/api/features', async (req, res) => {
       screenshots: screenshots || [],
       order: nextOrder,
     });
+    await recordLifecycle('feature', feature.toObject(), 'created');
     res.json({ success: true, feature: mapFeature(feature.toObject()) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1178,6 +1204,7 @@ app.post('/api/features/bulk', async (req, res) => {
     }));
 
     const saved = await Feature.insertMany(docs);
+    await recordRevisions('feature', saved.map(f => ({ after: f.toObject() })), 'created');
     const mapped = saved.map(f => mapFeature(f.toObject()));
     res.json({ success: true, features: mapped, count: mapped.length });
   } catch (err) {
@@ -1193,7 +1220,14 @@ app.put('/api/features/rename-family', async (req, res) => {
     }
     const filter = { productType, scope, family: oldFamily };
     if (combination) filter.combination = combination;
+    // Snapshot first: this rename runs before the per-row saves, so if it is not
+    // recorded here the family change is lost to history entirely.
+    const affected = await Feature.find(filter).lean();
     const result = await Feature.updateMany(filter, { family: newFamily });
+    await recordRevisions('feature', affected.map(doc => ({
+      before: doc,
+      after: { ...doc, family: newFamily },
+    })));
     res.json({ success: true, modified: result.modifiedCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1221,12 +1255,14 @@ app.put('/api/features/reorder', async (req, res) => {
 
 app.put('/api/features/:id', async (req, res) => {
   try {
+    const before = await Feature.findById(req.params.id).lean();
     const feature = await Feature.findByIdAndUpdate(
       req.params.id,
       req.body,
       { new: true, runValidators: true }
     ).lean();
     if (!feature) return res.status(404).json({ error: 'Feature not found' });
+    await recordRevision('feature', before, feature);
     res.json({ success: true, feature: mapFeature(feature) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1237,7 +1273,180 @@ app.delete('/api/features/:id', async (req, res) => {
   try {
     const feature = await Feature.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!feature) return res.status(404).json({ error: 'Feature not found' });
+    await recordLifecycle('feature', feature.toObject(), 'deleted');
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --------------- Revision History ---------------
+
+// Records what changed on a content record. Never throws into the request path:
+// failing to log history must not fail the edit itself.
+async function recordRevision(entityType, before, after) {
+  try {
+    if (!before || !after) return;
+    const changes = buildChanges(entityType, before, after);
+    if (!changes.length) return;
+    await Revision.create({
+      entityType,
+      entityId: after._id || before._id,
+      entityName: after.name || before.name || '',
+      action: 'updated',
+      changedAt: new Date(),
+      changes,
+    });
+  } catch (err) {
+    console.error(`Failed to record ${entityType} revision:`, err.message);
+  }
+}
+
+// Full version history for every feature row on one page (product / combination /
+// scope). Each row reports one chain per field: created -> updated to -> current.
+app.get('/api/feature-history', async (req, res) => {
+  try {
+    const { productType, combination, scope } = req.query;
+    const filter = {};
+    if (productType) filter.productType = productType;
+    if (scope) filter.scope = scope;
+    if (combination) filter.combination = combination;
+
+    // Soft-deleted rows are included so a removal is still visible in the history.
+    const features = await Feature.find(filter).sort({ order: 1, createdAt: 1 }).lean();
+    if (!features.length) return res.json({ rows: [] });
+
+    const revisions = await Revision.find({
+      entityType: 'feature',
+      entityId: { $in: features.map(f => f._id) },
+    }).sort({ changedAt: 1 }).lean();
+
+    const byEntity = new Map();
+    revisions.forEach((revision) => {
+      const key = String(revision.entityId);
+      if (!byEntity.has(key)) byEntity.set(key, []);
+      byEntity.get(key).push(revision);
+    });
+
+    const rows = features.map((feature) => {
+      const history = byEntity.get(String(feature._id)) || [];
+      const fields = buildFieldChains('feature', history, feature);
+      const lastChange = history.length ? history[history.length - 1] : null;
+      return {
+        entityId: String(feature._id),
+        name: feature.name,
+        isDeleted: !!feature.isDeleted,
+        createdAt: feature.createdAt,
+        updatedAt: feature.updatedAt,
+        lastAction: lastChange ? lastChange.action : null,
+        lastChangedAt: lastChange ? lastChange.changedAt : null,
+        tracked: history.length > 0,
+        fields,
+      };
+    }).filter(row => row.fields.length > 0);
+
+    res.json({ rows, totalFeatures: features.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Same chain view for a single record (a matrix, cloud info page or document).
+app.get('/api/history/:entityType/:entityId', async (req, res) => {
+  try {
+    const { entityType, entityId } = req.params;
+    if (!mongoose.isValidObjectId(entityId)) return res.status(400).json({ error: 'Invalid id' });
+
+    const MODELS = {
+      feature: Feature,
+      compatibility: CompatibilityMatrix,
+      cloudInfo: CloudInfo,
+      document: DocModel,
+      productConfig: ProductConfig,
+    };
+    const Model = MODELS[entityType];
+    if (!Model) return res.status(400).json({ error: 'Unknown entity type' });
+
+    const liveDoc = await Model.findById(entityId).lean();
+    const revisions = await Revision.find({ entityType, entityId }).sort({ changedAt: 1 }).lean();
+    const fields = buildFieldChains(entityType, revisions, liveDoc);
+    const lastChange = revisions.length ? revisions[revisions.length - 1] : null;
+
+    res.json({
+      rows: fields.length ? [{
+        entityId,
+        name: liveDoc ? liveDoc.name : '',
+        isDeleted: liveDoc ? !!liveDoc.isDeleted : false,
+        createdAt: liveDoc ? liveDoc.createdAt : null,
+        updatedAt: liveDoc ? liveDoc.updatedAt : null,
+        lastAction: lastChange ? lastChange.action : null,
+        lastChangedAt: lastChange ? lastChange.changedAt : null,
+        tracked: revisions.length > 0,
+        fields,
+      }] : [],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk equivalent of recordRevision for routes that write many documents at once
+// (family rename, bulk import, delete-by-scope). Without this, a bulk write is
+// invisible to history — and worse, it can swallow a change that a later per-row
+// save would otherwise have recorded.
+async function recordRevisions(entityType, pairs, action = 'updated') {
+  try {
+    const docs = [];
+    pairs.forEach(({ before, after }) => {
+      if (!after) return;
+      const changes = action === 'updated'
+        ? buildChanges(entityType, before, after)
+        : (action === 'created' ? buildInitialChanges(entityType, after) : []);
+      if (action === 'updated' && !changes.length) return;
+      docs.push({
+        entityType,
+        entityId: after._id || (before && before._id),
+        entityName: after.name || (before && before.name) || '',
+        action,
+        changedAt: new Date(),
+        changes,
+      });
+    });
+    if (docs.length) await Revision.insertMany(docs, { ordered: false });
+  } catch (err) {
+    console.error(`Failed to record ${entityType} ${action} revisions:`, err.message);
+  }
+}
+
+// Records a record being added or removed. A 'created' entry carries the values the
+// record started with, which is what anchors the "created: …" step of every chain.
+async function recordLifecycle(entityType, doc, action) {
+  try {
+    if (!doc) return;
+    await Revision.create({
+      entityType,
+      entityId: doc._id,
+      entityName: doc.name || '',
+      action,
+      changedAt: new Date(),
+      changes: action === 'created' ? buildInitialChanges(entityType, doc) : [],
+    });
+  } catch (err) {
+    console.error(`Failed to record ${entityType} ${action}:`, err.message);
+  }
+}
+
+// Latest revisions for one record, newest first.
+app.get('/api/revisions/:entityType/:entityId', async (req, res) => {
+  try {
+    const { entityType, entityId } = req.params;
+    if (!mongoose.isValidObjectId(entityId)) return res.status(400).json({ error: 'Invalid id' });
+    const limit = Math.min(Number(req.query.limit) || 1, 20);
+    const revisions = await Revision.find({ entityType, entityId })
+      .sort({ changedAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json({ revisions: revisions.map(r => ({ ...r, id: r._id.toString() })) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1315,6 +1524,7 @@ app.post('/api/compatibility', async (req, res) => {
     const maxOrder = await CompatibilityMatrix.findOne().sort({ order: -1 }).lean();
     const order = maxOrder ? (maxOrder.order || 0) + 1 : 0;
     const matrix = await CompatibilityMatrix.create({ name, slug, columns, rows, notes: notes || '', order });
+    await recordLifecycle('compatibility', matrix.toObject(), 'created');
     res.json({ success: true, matrix: { ...matrix.toObject(), id: matrix._id.toString() } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1349,8 +1559,10 @@ app.put('/api/compatibility/:id', async (req, res) => {
     if (columns !== undefined) update.columns = columns;
     if (rows !== undefined) update.rows = rows;
     if (notes !== undefined) update.notes = notes;
+    const before = await CompatibilityMatrix.findById(req.params.id).lean();
     const matrix = await CompatibilityMatrix.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
+    await recordRevision('compatibility', before, matrix);
     res.json({ success: true, matrix: { ...matrix, id: matrix._id.toString() } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1361,6 +1573,7 @@ app.delete('/api/compatibility/:id', async (req, res) => {
   try {
     const matrix = await CompatibilityMatrix.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
+    await recordLifecycle('compatibility', matrix.toObject(), 'deleted');
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1405,6 +1618,7 @@ app.post('/api/cloud-info', async (req, res) => {
     if (existing) slug = slug + '-' + Date.now();
     const count = await CloudInfo.countDocuments();
     const item = await CloudInfo.create({ name, slug, content: content || '', order: count });
+    await recordLifecycle('cloudInfo', item.toObject(), 'created');
     res.json({
       success: true,
       item: { ...item.toObject(), id: item._id.toString() },
@@ -1434,8 +1648,10 @@ app.put('/api/cloud-info/:id', async (req, res) => {
       update.content = content;
       contentStats = validation.stats;
     }
+    const before = await CloudInfo.findById(req.params.id).lean();
     const item = await CloudInfo.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ error: 'Not found' });
+    await recordRevision('cloudInfo', before, item);
     res.json({
       success: true,
       item: { ...item, id: item._id.toString() },
@@ -1450,6 +1666,7 @@ app.delete('/api/cloud-info/:id', async (req, res) => {
   try {
     const item = await CloudInfo.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!item) return res.status(404).json({ error: 'Not found' });
+    await recordLifecycle('cloudInfo', item.toObject(), 'deleted');
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1514,6 +1731,7 @@ app.post('/api/documents', async (req, res) => {
     const item = await DocModel.create({
       name, slug, content: content || '', fileType: fileType || 'manual', order: count,
     });
+    await recordLifecycle('document', item.toObject(), 'created');
     res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1580,8 +1798,10 @@ app.put('/api/documents/:id', async (req, res) => {
     }
     if (content !== undefined) update.content = content;
     if (fileType !== undefined) update.fileType = fileType;
+    const before = await DocModel.findById(req.params.id).lean();
     const item = await DocModel.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ error: 'Not found' });
+    await recordRevision('document', before, item);
     res.json({ success: true, item: { ...item, id: item._id.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1590,6 +1810,7 @@ app.delete('/api/documents/:id', async (req, res) => {
   try {
     const item = await DocModel.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!item) return res.status(404).json({ error: 'Not found' });
+    await recordLifecycle('document', item.toObject(), 'deleted');
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

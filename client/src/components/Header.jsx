@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import NotificationBell from './NotificationBell';
 
 function getInitials(name, email) {
   if (name && name.trim()) {
@@ -59,6 +60,8 @@ function Header({ darkMode, onToggleDark, isAdmin, onLogout, user }) {
       )}
 
       <div className="header-right">
+        {!isAdmin && user && <NotificationBell />}
+
         <button className="dark-mode-btn" onClick={onToggleDark} title="Toggle dark mode">
           {darkMode ? (
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

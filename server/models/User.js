@@ -13,6 +13,15 @@ const userSchema = new mongoose.Schema({
     documents: { type: Boolean, default: true },
   },
   isActive: { type: Boolean, default: true },
+  // Everything changed after this instant counts as unread. Set to the moment of
+  // creation for new accounts, so nobody starts with a backlog of old edits.
+  // "Mark all as read" moves it forward.
+  notificationsSeenAt: { type: Date, default: null },
+  // Individually dismissed notifications, so opening one clears just that one.
+  notificationReads: {
+    type: [new mongoose.Schema({ key: String, at: Date }, { _id: false })],
+    default: [],
+  },
 }, {
   timestamps: true,
 });

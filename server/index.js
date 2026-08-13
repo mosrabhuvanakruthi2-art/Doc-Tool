@@ -219,6 +219,7 @@ app.post('/api/auth/microsoft/exchange', async (req, res) => {
           permissions: DEFAULT_MS_PERMISSIONS,
           password: crypto.randomBytes(32).toString('hex'), // random — MS login only, never used
           isActive: true,
+          notificationsSeenAt: new Date(),
         });
       }
     } catch {}
@@ -414,6 +415,7 @@ app.put('/api/access-requests/:id/approve', requireAdmin, async (req, res) => {
         permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true },
         password: crypto.randomBytes(32).toString('hex'),
         isActive: true,
+        notificationsSeenAt: new Date(),
       });
     }
 
@@ -492,6 +494,7 @@ app.post('/api/users', requireAdmin, async (req, res) => {
       name: name || '',
       role: role || 'viewer',
       permissions: permissions || {},
+      notificationsSeenAt: new Date(),
     });
     const obj = user.toObject();
     delete obj.password;
@@ -821,8 +824,10 @@ app.post('/api/product-config/:id/combinations', async (req, res) => {
     const config = await ProductConfig.findById(req.params.id);
     if (!config) return res.status(404).json({ error: 'Not found' });
     if (config.combinations.includes(combination)) return res.status(400).json({ error: 'Combination already exists' });
+    const before = config.toObject();
     config.combinations.push(combination);
     await config.save();
+    await recordRevision('productConfig', before, config.toObject());
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -844,8 +849,10 @@ app.delete('/api/product-config/:id/combinations/:combo', async (req, res) => {
     const combo = decodeURIComponent(req.params.combo);
     const config = await ProductConfig.findById(req.params.id);
     if (!config) return res.status(404).json({ error: 'Not found' });
+    const before = config.toObject();
     config.combinations = config.combinations.filter(c => c !== combo);
     await config.save();
+    await recordRevision('productConfig', before, config.toObject());
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1301,6 +1308,256 @@ async function recordRevision(entityType, before, after) {
     console.error(`Failed to record ${entityType} revision:`, err.message);
   }
 }
+
+// --------------- Notifications ---------------
+//
+// Derived from the revision log rather than stored per user: a notification is just
+// "something you can see changed after the last time you looked". Each entity type
+// maps to the tab permission that governs it, so a viewer without Documents access
+// never hears about document edits.
+const NOTIFY_PERMISSION = {
+  feature: 'productTypes',
+  productConfig: 'productTypes',
+  compatibility: 'compatibility',
+  cloudInfo: 'cloudInfo',
+  document: 'documents',
+};
+
+const ACTION_VERB = { created: 'was added', deleted: 'was removed', restored: 'was restored', updated: 'was updated' };
+
+// Arrivals and removals get their own notification so a later edit cannot bury them.
+function lifecycleSuffix(action) {
+  return action && action !== 'updated' ? `|${action}` : '';
+}
+
+async function resolveNotificationUser(req) {
+  const decoded = decodeToken(req);
+  if (!decoded) return null;
+
+  const email = String(decoded.email || '').toLowerCase().trim();
+  const isEnvAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase().trim();
+  let dbUser = null;
+  try { dbUser = await User.findOne({ email }); } catch { /* history still works read-only */ }
+
+  const isAdmin = isEnvAdmin || decoded.role === 'admin' || (dbUser && dbUser.role === 'admin');
+  const permissions = isAdmin
+    ? FULL_PERMISSIONS
+    : ((dbUser && dbUser.permissions) || decoded.permissions || {});
+
+  const readAt = new Map();
+  if (dbUser && Array.isArray(dbUser.notificationReads)) {
+    dbUser.notificationReads.forEach(entry => { if (entry && entry.key) readAt.set(entry.key, entry.at); });
+  }
+
+  return {
+    email, dbUser, permissions,
+    seenAt: dbUser ? dbUser.notificationsSeenAt : null,
+    readAt,
+  };
+}
+
+// Unread until the change is newer than both the global "mark all read" mark and
+// any dismissal of that specific notification.
+function isUnread(changedAt, seenAt, dismissedAt) {
+  const changed = new Date(changedAt).getTime();
+  if (seenAt && changed <= new Date(seenAt).getTime()) return false;
+  if (dismissedAt && changed <= new Date(dismissedAt).getTime()) return false;
+  return true;
+}
+
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const account = await resolveNotificationUser(req);
+    if (!account) return res.status(401).json({ error: 'Invalid or expired token' });
+    const { permissions, seenAt, readAt } = account;
+
+    // Two windows, merged: the recent log for context, plus *everything* since this
+    // user last cleared their notifications. A busy day must never push an unread
+    // change out of a fixed-size window and silently lose it.
+    const [recent, sinceSeen] = await Promise.all([
+      Revision.find({}).sort({ changedAt: -1 }).limit(400).lean(),
+      seenAt
+        ? Revision.find({ changedAt: { $gt: new Date(seenAt) } }).sort({ changedAt: -1 }).limit(2000).lean()
+        : Promise.resolve([]),
+    ]);
+    const merged = new Map();
+    [...sinceSeen, ...recent].forEach(r => merged.set(String(r._id), r));
+    const revisions = [...merged.values()].sort((a, b) => new Date(b.changedAt) - new Date(a.changedAt));
+
+    // Only changes to tabs this user is allowed to see. An absent flag counts as
+    // allowed, matching how the sidebar decides what to show.
+    const visible = revisions.filter((revision) => {
+      const key = NOTIFY_PERMISSION[revision.entityType];
+      return key && permissions[key] !== false;
+    });
+
+    // Feature rows carry no location of their own, so fetch the page each belongs to.
+    const featureIds = visible.filter(r => r.entityType === 'feature').map(r => r.entityId);
+    const features = featureIds.length
+      ? await Feature.find({ _id: { $in: featureIds } }).select('productType combination scope').lean()
+      : [];
+    const featureById = new Map(features.map(f => [String(f._id), f]));
+
+    // Slugs for the pages a notification can link to.
+    const idsOf = (type) => visible.filter(r => r.entityType === type).map(r => r.entityId);
+    const [matrices, infos, documents] = await Promise.all([
+      CompatibilityMatrix.find({ _id: { $in: idsOf('compatibility') } }).select('slug name').lean(),
+      CloudInfo.find({ _id: { $in: idsOf('cloudInfo') } }).select('slug name').lean(),
+      DocModel.find({ _id: { $in: idsOf('document') } }).select('slug name').lean(),
+    ]);
+    const slugById = new Map([...matrices, ...infos, ...documents].map(d => [String(d._id), d.slug]));
+
+    // Group so ten edits to one page read as one notification, not ten.
+    const groups = new Map();
+    visible.forEach((revision) => {
+      let key;
+      let title;
+      let message;
+      let link = null;
+
+      if (revision.entityType === 'feature') {
+        const feature = featureById.get(String(revision.entityId));
+        if (!feature) return; // hard-deleted row, nothing to point at
+        // Lead with the product type, then the combination, so the message reads
+        // like the place it happened: In Message, "Slack to Chat" was updated.
+        const scopeSuffix = feature.scope === 'outscope' ? ' (Outscope)' : '';
+        const verb = revision.action === 'created' ? 'has new content' : 'was updated';
+        key = `feature|${feature.productType}|${feature.combination}|${feature.scope}`;
+        title = feature.combination || feature.productType;
+        message = feature.combination
+          ? `In ${feature.productType}, "${feature.combination}"${scopeSuffix} ${verb} — please check`
+          : `In ${feature.productType}${scopeSuffix}, features ${verb} — please check`;
+        link = { product: feature.productType, combination: feature.combination, section: feature.scope };
+      } else if (revision.entityType === 'productConfig') {
+        // "Something new appeared" and "it was later edited" are different events.
+        // Keeping them under one key let a subsequent edit overwrite the arrival.
+        key = `productConfig|${revision.entityId}${lifecycleSuffix(revision.action)}`;
+        title = revision.entityName;
+        // Name the combinations that came or went — "the product type was updated"
+        // says nothing about what to go and look at.
+        const comboChange = (revision.changes || []).find(c => c.field === 'combinations');
+        const addedCombos = (comboChange && comboChange.added) || [];
+        const removedCombos = (comboChange && comboChange.removed) || [];
+        const listOf = (values) => values.map(v => `"${v}"`).join(', ');
+
+        if (revision.action === 'created') {
+          message = `New product type "${revision.entityName}" was added`;
+        } else if (addedCombos.length) {
+          message = `In ${revision.entityName}, new combination ${listOf(addedCombos)} was added`
+            + (removedCombos.length ? ` and ${listOf(removedCombos)} removed` : '');
+        } else if (removedCombos.length) {
+          message = `In ${revision.entityName}, combination ${listOf(removedCombos)} was removed`;
+        } else {
+          message = `Product type "${revision.entityName}" ${ACTION_VERB[revision.action] || 'was updated'}`;
+        }
+
+        // Point straight at the new combination when there is exactly one.
+        link = addedCombos.length === 1
+          ? { product: revision.entityName, combination: addedCombos[0] }
+          : { product: revision.entityName };
+      } else {
+        const slug = slugById.get(String(revision.entityId));
+        const label = {
+          compatibility: 'Compatibility matrix',
+          cloudInfo: 'Cloud info',
+          document: 'Document',
+        }[revision.entityType];
+        key = `${revision.entityType}|${revision.entityId}${lifecycleSuffix(revision.action)}`;
+        title = revision.entityName;
+        message = `${label} "${revision.entityName}" ${ACTION_VERB[revision.action] || 'was updated'}`;
+        if (slug) {
+          link = revision.entityType === 'compatibility' ? { view: 'compatibility', matrix: slug }
+            : revision.entityType === 'cloudInfo' ? { view: 'cloudinfo', info: slug }
+              : { view: 'documents', doc: slug };
+        }
+      }
+
+      const existing = groups.get(key);
+      if (existing) {
+        existing.count += 1;
+        return; // revisions arrive newest first, so the first one already set the time
+      }
+      groups.set(key, {
+        key,
+        entityType: revision.entityType,
+        title,
+        message,
+        at: revision.changedAt,
+        count: 1,
+        link,
+        unread: isUnread(revision.changedAt, seenAt, readAt.get(key)),
+      });
+    });
+
+    // Unread entries are never dropped by the display cap; read ones fill what is
+    // left. The final list stays in newest-first order.
+    const all = [...groups.values()].sort((a, b) => new Date(b.at) - new Date(a.at));
+    const unreadItems = all.filter(i => i.unread);
+    const readItems = all.filter(i => !i.unread);
+    const items = [...unreadItems, ...readItems.slice(0, Math.max(0, 50 - unreadItems.length))]
+      .sort((a, b) => new Date(b.at) - new Date(a.at));
+
+    res.json({
+      items,
+      unreadCount: items.filter(i => i.unread).length,
+      // Without a users row (env-only admin) read state cannot be remembered.
+      canPersistRead: !!account.dbUser,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dismiss one notification — opening it clears just that entry.
+app.post('/api/notifications/read', async (req, res) => {
+  try {
+    const account = await resolveNotificationUser(req);
+    if (!account) return res.status(401).json({ error: 'Invalid or expired token' });
+
+    const { key, at } = req.body || {};
+    if (!key) return res.status(400).json({ error: 'key is required' });
+    if (!account.dbUser) return res.json({ success: true, persisted: false });
+
+    // Dismiss up to the change the user actually saw, not the moment they clicked.
+    // Anything that lands between rendering the list and the click stays unread
+    // instead of being silently swallowed.
+    const now = Date.now();
+    const seenChange = at ? new Date(at).getTime() : NaN;
+    const dismissAt = new Date(!isNaN(seenChange) && seenChange <= now ? seenChange : now);
+
+    const user = account.dbUser;
+    const reads = (user.notificationReads || []).filter(entry => entry && entry.key !== key);
+    reads.push({ key, at: dismissAt });
+
+    // Entries older than the global mark are already covered by it, and the list
+    // should not grow without bound.
+    const seen = user.notificationsSeenAt ? new Date(user.notificationsSeenAt).getTime() : 0;
+    user.notificationReads = reads
+      .filter(entry => new Date(entry.at).getTime() > seen)
+      .slice(-200);
+
+    await user.save();
+    res.json({ success: true, persisted: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark everything read.
+app.post('/api/notifications/read-all', async (req, res) => {
+  try {
+    const account = await resolveNotificationUser(req);
+    if (!account) return res.status(401).json({ error: 'Invalid or expired token' });
+    if (!account.dbUser) return res.json({ success: true, persisted: false });
+
+    account.dbUser.notificationsSeenAt = new Date();
+    account.dbUser.notificationReads = []; // subsumed by the new mark
+    await account.dbUser.save();
+    res.json({ success: true, persisted: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Full version history for every feature row on one page (product / combination /
 // scope). Each row reports one chain per field: created -> updated to -> current.

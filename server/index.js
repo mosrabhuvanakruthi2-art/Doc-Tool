@@ -22,6 +22,7 @@ const AccessRequest = require('./models/AccessRequest');
 const Revision = require('./models/Revision');
 const { buildChanges, buildInitialChanges } = require('./utils/revisionDiff');
 const { buildFieldChains } = require('./utils/revisionHistory');
+const { buildFeatureTableDocx } = require('./utils/featureDocx');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -1282,6 +1283,158 @@ app.delete('/api/features/:id', async (req, res) => {
     if (!feature) return res.status(404).json({ error: 'Feature not found' });
     await recordLifecycle('feature', feature.toObject(), 'deleted');
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --------------- Internal API (product types & combinations) ---------------
+//
+// For the companion application, not the public. Scope is deliberately narrow: it
+// lists product types with their combinations, and returns a Word document of the
+// feature table (name + description only) for one of them.
+const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
+// While true the endpoints answer without a key, so a URL can be opened straight in
+// a browser. Set INTERNAL_API_PUBLIC=false to require the key again.
+const INTERNAL_API_PUBLIC = String(process.env.INTERNAL_API_PUBLIC || '').toLowerCase() === 'true';
+
+function safeEquals(a, b) {
+  // Hash both sides first: timingSafeEqual needs equal lengths, and comparing
+  // lengths up front would leak the secret's length.
+  const hashA = crypto.createHash('sha256').update(String(a)).digest();
+  const hashB = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
+
+function requireInternalKey(req, res, next) {
+  if (INTERNAL_API_PUBLIC) return next();
+  if (!INTERNAL_API_KEY) {
+    return res.status(503).json({ error: 'Internal API is not configured on this server' });
+  }
+  // Header for server-to-server calls; ?key= so the URL also works in a browser.
+  const provided = req.headers['x-internal-key'] || req.query.key || '';
+  if (!provided || !safeEquals(provided, INTERNAL_API_KEY)) {
+    return res.status(401).json({ error: 'Invalid or missing key (send X-Internal-Key header or ?key=)' });
+  }
+  next();
+}
+
+const internalSiteUrl = () => String(process.env.FRONTEND_URL || 'http://localhost:4002').replace(/\/$/, '');
+
+function featurePageUrl({ productType, combination, scope }) {
+  const query = new URLSearchParams();
+  if (productType) query.set('product', productType);
+  if (combination) query.set('combination', combination);
+  query.set('section', scope || 'inscope');
+  return `${internalSiteUrl()}/?${query.toString()}`;
+}
+
+// Product types, their combinations, and which of those actually have a document.
+app.get('/api/internal/v1/product-types', requireInternalKey, async (req, res) => {
+  try {
+    const [configs, features] = await Promise.all([
+      ProductConfig.find({ isDeleted: { $ne: true } }).sort({ order: 1 }).lean(),
+      Feature.find({ isDeleted: { $ne: true } }).select('productType combination scope updatedAt').lean(),
+    ]);
+
+    // Count features per product type / combination / scope so the caller knows in
+    // advance whether a request will produce a document.
+    const counts = new Map();
+    features.forEach((f) => {
+      const key = `${f.productType}|${f.combination || ''}|${f.scope}`;
+      const entry = counts.get(key);
+      if (entry) {
+        entry.features += 1;
+        if (new Date(f.updatedAt) > new Date(entry.updatedAt)) entry.updatedAt = f.updatedAt;
+      } else {
+        counts.set(key, { features: 1, updatedAt: f.updatedAt });
+      }
+    });
+
+    // Build docUrl from the host that was actually called, so a request to
+    // localhost:4002 gets localhost:4002 links rather than the production site.
+    // pageUrl still comes from FRONTEND_URL, since that points at the docs site.
+    const apiOrigin = `${req.headers['x-forwarded-proto'] || req.protocol}://${req.headers.host}`;
+    const docUrl = (productType, combination, scope) => {
+      const query = new URLSearchParams({ productType, scope });
+      if (combination) query.set('combination', combination);
+      return `${apiOrigin}/api/internal/v1/word-doc?${query.toString()}`;
+    };
+
+    const productTypes = configs.map((config) => ({
+      productType: config.name,
+      combinations: (config.combinations || []).map((combination) => ({
+        combination,
+        scopes: ['inscope', 'outscope'].map((scope) => {
+          const entry = counts.get(`${config.name}|${combination}|${scope}`);
+          return {
+            scope,
+            features: entry ? entry.features : 0,
+            // An empty table is not a document.
+            wordDoc: !!entry,
+            updatedAt: entry ? entry.updatedAt : null,
+            docUrl: entry ? docUrl(config.name, combination, scope) : null,
+            pageUrl: featurePageUrl({ productType: config.name, combination, scope }),
+          };
+        }),
+      })),
+    }));
+
+    const body = { generatedAt: new Date().toISOString(), productTypes };
+    if (req.query.pretty !== undefined) {
+      res.setHeader('Content-Type', 'application/json');
+      return res.send(JSON.stringify(body, null, 2));
+    }
+    res.json(body);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// The Word document for one product type / combination / scope.
+app.get('/api/internal/v1/word-doc', requireInternalKey, async (req, res) => {
+  try {
+    const productType = String(req.query.productType || '').trim();
+    const combination = String(req.query.combination || '').trim();
+    const scope = String(req.query.scope || 'inscope').trim().toLowerCase();
+
+    if (!productType) {
+      return res.status(400).json({
+        error: 'productType is required',
+        example: `${internalSiteUrl()}/api/internal/v1/word-doc?productType=Message&combination=Slack to Chat&scope=inscope`,
+      });
+    }
+    if (!['inscope', 'outscope'].includes(scope)) {
+      return res.status(400).json({ error: 'scope must be inscope or outscope' });
+    }
+
+    const filter = { productType, scope, isDeleted: { $ne: true } };
+    if (combination) filter.combination = combination;
+
+    const features = await Feature.find(filter)
+      .select('name description order createdAt')
+      .sort({ order: 1, createdAt: 1 })
+      .lean();
+
+    // Nothing to tabulate — report unavailable rather than sending an empty table.
+    if (!features.length) {
+      return res.status(404).json({
+        available: false,
+        reason: `No ${scope} features found for ${productType}${combination ? ' / ' + combination : ''}`,
+        productType,
+        combination: combination || undefined,
+        scope,
+        pageUrl: featurePageUrl({ productType, combination, scope }),
+      });
+    }
+
+    const built = await buildFeatureTableDocx({ features, productType, combination, scope });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${built.filename}"`);
+    res.setHeader('Content-Length', built.buffer.length);
+    res.setHeader('X-Doc-Filename', built.filename);
+    res.setHeader('X-Doc-Stats', JSON.stringify(built.stats));
+    res.end(built.buffer);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

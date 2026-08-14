@@ -1,12 +1,16 @@
 const {
   Document, Packer, Paragraph, TextRun,
-  Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle,
+  Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle, VerticalAlign,
 } = require('docx');
 
 // Builds the Word document served by the internal API for a product type /
-// combination. Deliberately plain: a title, one line of context, and a single table
-// of feature names and descriptions. No screenshots, no family grouping — those live
-// in the browser export, which stays as it is.
+// combination: a single table, one merged heading row, then a name and description
+// per feature. No screenshots, no numbering column.
+//
+// The heading follows the scope — in scope lists what the migration includes, out of
+// scope lists what it does not:
+//   inscope  -> "INCLUDED IN TEAMS TO SLACK MIGRATION FEATURES"
+//   outscope -> "NOT INCLUDED IN TEAMS TO SLACK MIGRATION FEATURES"
 
 function getDateStr(now = new Date()) {
   const dd = String(now.getDate()).padStart(2, '0');
@@ -20,80 +24,59 @@ function filenameFor(productType, combination) {
   return `${safe}_(${getDateStr()}).docx`;
 }
 
-const BORDER = { style: BorderStyle.SINGLE, size: 1, color: '999999' };
-const CELL_BORDERS = { top: BORDER, bottom: BORDER, left: BORDER, right: BORDER };
-
-function headerCell(text, width) {
-  return new TableCell({
-    children: [new Paragraph({
-      children: [new TextRun({ text, bold: true, size: 20, font: 'Calibri' })],
-      alignment: AlignmentType.CENTER,
-    })],
-    shading: { fill: 'd6e4ff' },
-    borders: CELL_BORDERS,
-    width: { size: width, type: WidthType.PERCENTAGE },
-  });
+function headingFor(productType, combination, scope) {
+  const subject = String(combination || productType).toUpperCase();
+  const prefix = scope === 'outscope' ? 'NOT INCLUDED IN' : 'INCLUDED IN';
+  return `${prefix} ${subject} MIGRATION FEATURES`;
 }
 
-function bodyCell(text, { center = false, width } = {}) {
+const BORDER = { style: BorderStyle.SINGLE, size: 4, color: '000000' };
+const CELL_BORDERS = { top: BORDER, bottom: BORDER, left: BORDER, right: BORDER };
+const HEADER_FILL = 'A6A6A6';
+const NAME_WIDTH = 40;
+const DESC_WIDTH = 60;
+
+function cell(text, { width, bold = false, span, fill } = {}) {
   return new TableCell({
     children: [new Paragraph({
-      children: [new TextRun({ text: text || '', size: 20, font: 'Calibri' })],
-      ...(center ? { alignment: AlignmentType.CENTER } : {}),
+      children: [new TextRun({ text: text || '', bold, size: 20, font: 'Calibri' })],
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 40, after: 40 },
     })],
     borders: CELL_BORDERS,
+    verticalAlign: VerticalAlign.CENTER,
     ...(width ? { width: { size: width, type: WidthType.PERCENTAGE } } : {}),
+    ...(span ? { columnSpan: span } : {}),
+    ...(fill ? { shading: { fill } } : {}),
   });
 }
 
 async function buildFeatureTableDocx({ features, productType, combination, scope }) {
-  const scopeLabel = scope === 'outscope' ? 'Out of Scope' : 'In Scope';
-
-  const rows = [new TableRow({
-    tableHeader: true,
-    children: [headerCell('S.No', 8), headerCell('Name', 30), headerCell('Description', 62)],
-  })];
-
-  features.forEach((feature, idx) => {
-    rows.push(new TableRow({
-      children: [
-        bodyCell(String(idx + 1), { center: true, width: 8 }),
-        bodyCell(feature.name, { width: 30 }),
-        bodyCell(feature.description, { width: 62 }),
-      ],
-    }));
-  });
-
-  const heading = combination || productType;
-  const children = [
-    new Paragraph({
-      children: [new TextRun({ text: heading, bold: true, size: 40, font: 'Calibri' })],
-      spacing: { after: 120 },
+  const rows = [
+    // One merged cell across both columns carries the heading, as in the sample.
+    new TableRow({
+      tableHeader: true,
+      children: [cell(headingFor(productType, combination, scope), { span: 2, bold: true, fill: HEADER_FILL })],
     }),
-    new Paragraph({
+    ...features.map(feature => new TableRow({
       children: [
-        new TextRun({ text: 'Product Type: ', bold: true, size: 22, font: 'Calibri' }),
-        new TextRun({ text: `${productType}    `, size: 22, font: 'Calibri' }),
-        ...(combination ? [
-          new TextRun({ text: 'Combination: ', bold: true, size: 22, font: 'Calibri' }),
-          new TextRun({ text: `${combination}    `, size: 22, font: 'Calibri' }),
-        ] : []),
-        new TextRun({ text: 'Scope: ', bold: true, size: 22, font: 'Calibri' }),
-        new TextRun({ text: `${scopeLabel}    `, size: 22, font: 'Calibri' }),
-        new TextRun({ text: 'Total: ', bold: true, size: 22, font: 'Calibri' }),
-        new TextRun({ text: String(features.length), size: 22, font: 'Calibri' }),
+        cell(feature.name, { width: NAME_WIDTH }),
+        cell(feature.description, { width: DESC_WIDTH }),
       ],
-      spacing: { after: 240 },
-    }),
-    new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } }),
+    })),
   ];
 
-  const doc = new Document({ sections: [{ children }] });
+  const doc = new Document({
+    sections: [{
+      children: [new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } })],
+    }],
+  });
   const buffer = await Packer.toBuffer(doc);
 
   return {
     buffer,
     filename: filenameFor(productType, combination),
+    heading: headingFor(productType, combination, scope),
     stats: {
       features: features.length,
       withDescription: features.filter(f => String(f.description || '').trim()).length,
@@ -101,4 +84,4 @@ async function buildFeatureTableDocx({ features, productType, combination, scope
   };
 }
 
-module.exports = { buildFeatureTableDocx, getDateStr };
+module.exports = { buildFeatureTableDocx, headingFor, getDateStr };

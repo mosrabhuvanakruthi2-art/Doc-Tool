@@ -1306,7 +1306,46 @@ function safeEquals(a, b) {
   return crypto.timingSafeEqual(hashA, hashB);
 }
 
+// Two optional allowlists, both comma-separated in .env:
+//
+//   INTERNAL_API_ALLOWED_ORIGINS=https://sprintboard.cftools.live
+//     Applies to calls made by browser JavaScript, which carry an Origin header.
+//     Leave empty to accept any origin.
+//
+//   INTERNAL_API_ALLOWED_IPS=203.0.113.7
+//     Applies to server-to-server calls, which carry no Origin at all — the only
+//     thing to check there is the address the request came from.
+const splitList = (value) => String(value || '').split(',').map(s => s.trim()).filter(Boolean);
+const INTERNAL_API_ALLOWED_ORIGINS = splitList(process.env.INTERNAL_API_ALLOWED_ORIGINS)
+  .map(o => o.replace(/\/$/, '').toLowerCase());
+const INTERNAL_API_ALLOWED_IPS = splitList(process.env.INTERNAL_API_ALLOWED_IPS);
+
+function callerIp(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const ip = forwarded || req.socket.remoteAddress || '';
+  return ip.replace(/^::ffff:/, ''); // normalise IPv4-mapped IPv6
+}
+
 function requireInternalKey(req, res, next) {
+  const origin = String(req.headers.origin || '').replace(/\/$/, '').toLowerCase();
+
+  // A browser call from an origin that is not on the list gets nothing, key or not.
+  if (origin && INTERNAL_API_ALLOWED_ORIGINS.length
+    && !INTERNAL_API_ALLOWED_ORIGINS.includes(origin)) {
+    return res.status(403).json({ error: 'Origin not allowed' });
+  }
+  // Echo the specific origin so the browser accepts the response. The app-wide
+  // cors() sets a wildcard, which is too loose for this endpoint.
+  if (origin && INTERNAL_API_ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+    res.setHeader('Vary', 'Origin');
+  }
+
+  // No Origin means a server-to-server caller: check the address instead.
+  if (!origin && INTERNAL_API_ALLOWED_IPS.length && !INTERNAL_API_ALLOWED_IPS.includes(callerIp(req))) {
+    return res.status(403).json({ error: 'Caller address not allowed', seenIp: callerIp(req) });
+  }
+
   if (INTERNAL_API_PUBLIC) return next();
   if (!INTERNAL_API_KEY) {
     return res.status(503).json({ error: 'Internal API is not configured on this server' });

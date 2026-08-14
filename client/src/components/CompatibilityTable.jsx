@@ -164,7 +164,7 @@ function CompatibilityTable({ matrixSlug }) {
   };
 
   if (loading) {
-    return <CfLoader />;
+    return <CfLoader inline />;
   }
 
   if (error) {

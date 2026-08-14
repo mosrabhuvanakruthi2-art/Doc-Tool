@@ -418,7 +418,7 @@ function RevisionDiffModal({ entityType, entityId, entityName, scope, title, onC
         </div>
 
         <div className="diff-modal-body">
-          {loading && <CfLoader />}
+          {loading && <CfLoader inline />}
 
           {!loading && error && (
             <div className="diff-note diff-note-error">Could not load history: {error}</div>

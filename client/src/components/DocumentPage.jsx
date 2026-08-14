@@ -180,7 +180,7 @@ function DocumentPage({ slug }) {
       .finally(() => setLoading(false));
   }, [slug]);
 
-  if (loading) return <div className="cloud-info-page"><CfLoader /></div>;
+  if (loading) return <div className="cloud-info-page"><CfLoader inline /></div>;
   if (error) return <div className="cloud-info-page"><p className="error-msg">{error}</p></div>;
   if (!item) return <div className="cloud-info-page"><p>Select a document from the sidebar.</p></div>;
 

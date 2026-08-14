@@ -276,7 +276,7 @@ function CloudInfoPage({ slug }) {
   }, [slug]);
 
   if (loading) {
-    return <div className="cloud-info-page"><CfLoader /></div>;
+    return <div className="cloud-info-page"><CfLoader inline /></div>;
   }
 
   if (error) {

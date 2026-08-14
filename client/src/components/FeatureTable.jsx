@@ -429,7 +429,7 @@ function FeatureTable() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan="5"><CfLoader /></td>
+                <td colSpan="5" className="feature-table-loading"><CfLoader inline /></td>
               </tr>
             ) : features.length === 0 ? (
               <tr>

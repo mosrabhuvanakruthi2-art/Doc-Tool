@@ -8,6 +8,7 @@ import FilterTags from './FilterTags';
 import DocumentView from './DocumentView';
 import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
+import { reportDownload } from '../reportDownload';
 
 function WelcomePage() {
   const [stats, setStats] = useState({ productTypes: 0, combinations: 0, compatibility: 0, cloudInfo: 0 });
@@ -346,6 +347,7 @@ function FeatureTable() {
       const doc = new Document({ sections: [{ children }] });
       const blob = await Packer.toBlob(doc);
       saveAs(blob, getExportFilename(productType, combination, 'docx'));
+      reportDownload('features', 'docx', { productType, combination, scope: section, name: combination || productType });
     } catch (err) {
       console.error('DOCX download error:', err);
     }

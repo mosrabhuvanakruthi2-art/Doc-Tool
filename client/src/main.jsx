@@ -7,6 +7,11 @@ import { msalInstance } from './msalConfig';
 import { handleMicrosoftCallback } from './msalOauth';
 import App from './App';
 import './index.css';
+import { installApiAuth } from './apiAuth';
+
+// Must run before any request is made, so writes carry the user identity that
+// version history records as "updated by".
+installApiAuth();
 
 msalInstance.initialize().then(async () => {
   let msRedirectToken = null;

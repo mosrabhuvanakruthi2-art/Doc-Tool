@@ -32,6 +32,11 @@ const revisionSchema = new mongoose.Schema({
   entityId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
   entityName: { type: String, default: '' },
   action: { type: String, enum: ['created', 'updated', 'deleted', 'restored'], default: 'updated' },
+  // Who made the change, taken from the caller's token. Empty when the write
+  // arrived without one, which is possible because the content routes do not
+  // require authentication.
+  actorEmail: { type: String, default: '' },
+  actorName: { type: String, default: '' },
   changedAt: { type: Date, default: Date.now, index: true },
   changes: { type: [changeSchema], default: [] },
 });

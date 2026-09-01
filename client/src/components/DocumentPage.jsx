@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
+import { reportDownload } from '../reportDownload';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
 
@@ -198,6 +199,7 @@ function DocumentPage({ slug }) {
       const doc = new Document({ sections: [{ children: docChildren }] });
       const blob = await Packer.toBlob(doc);
       saveAs(blob, title.replace(/[^a-zA-Z0-9 ]/g, '').replace(/\s+/g, '_') + '.docx');
+      reportDownload('document', 'docx', { name: title });
     } catch (err) { console.error('Export failed:', err); }
     setExporting(false);
   };

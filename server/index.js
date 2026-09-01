@@ -20,6 +20,7 @@ const User = require('./models/User');
 const DocModel = require('./models/Document');
 const AccessRequest = require('./models/AccessRequest');
 const Revision = require('./models/Revision');
+const AuditLog = require('./models/AuditLog');
 const { buildChanges, buildInitialChanges } = require('./utils/revisionDiff');
 const { buildFieldChains } = require('./utils/revisionHistory');
 const { buildFeatureTableDocx } = require('./utils/featureDocx');
@@ -64,18 +65,55 @@ app.post('/api/auth/login', async (req, res) => {
     if (email.toLowerCase().trim() === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
       const payload = { email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS };
       const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+      await audit(req, {
+        action: 'auth.login', category: 'auth',
+        actorEmail: ADMIN_EMAIL, actorName: 'Admin', actorRole: 'admin',
+        summary: `${ADMIN_EMAIL} signed in (password, environment admin)`,
+        details: { method: 'password', via: 'env-admin' },
+      });
       return res.json({ success: true, token, user: { email: ADMIN_EMAIL, name: 'Admin', role: 'admin', permissions: FULL_PERMISSIONS } });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user) return res.status(401).json({ error: 'Invalid email or password' });
-    if (!user.isActive) return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
+    const attempted = String(email).toLowerCase().trim();
+    const user = await User.findOne({ email: attempted });
+    if (!user) {
+      await audit(req, {
+        action: 'auth.login_failed', category: 'auth', outcome: 'failure',
+        actorEmail: attempted, actorName: '', actorRole: '',
+        summary: `Failed sign-in for ${attempted} — no such account`,
+        details: { reason: 'unknown_account' },
+      });
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    if (!user.isActive) {
+      await audit(req, {
+        action: 'auth.login_failed', category: 'auth', outcome: 'failure',
+        actorEmail: attempted, actorName: user.name || '', actorRole: user.role || '',
+        summary: `Failed sign-in for ${attempted} — account is deactivated`,
+        details: { reason: 'deactivated' },
+      });
+      return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
+    }
     const valid = await user.comparePassword(password);
-    if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
+    if (!valid) {
+      await audit(req, {
+        action: 'auth.login_failed', category: 'auth', outcome: 'failure',
+        actorEmail: attempted, actorName: user.name || '', actorRole: user.role || '',
+        summary: `Failed sign-in for ${attempted} — wrong password`,
+        details: { reason: 'bad_password' },
+      });
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
 
     const perms = user.role === 'admin' ? FULL_PERMISSIONS : (user.permissions || FULL_PERMISSIONS);
     const payload = { userId: user._id.toString(), email: user.email, role: user.role, permissions: perms };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+    await audit(req, {
+      action: 'auth.login', category: 'auth',
+      actorEmail: user.email, actorName: user.name || '', actorRole: user.role,
+      summary: `${user.email} signed in (password)`,
+      details: { method: 'password', role: user.role },
+    });
     res.json({ success: true, token, user: { email: user.email, name: user.name, role: user.role, permissions: perms } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -108,15 +146,32 @@ app.get('/api/auth/verify', async (req, res) => {
 
 app.post('/api/admin/login', async (req, res) => {
   const { email, password } = req.body;
-  if (email?.toLowerCase().trim() === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
+  const attempted = String(email || '').toLowerCase().trim();
+  if (attempted === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
     const token = jwt.sign({ email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: '8h' });
+    await audit(req, {
+      action: 'auth.admin_login', category: 'auth',
+      actorEmail: ADMIN_EMAIL, actorName: 'Admin', actorRole: 'admin',
+      summary: `${ADMIN_EMAIL} opened the Admin Panel (environment admin)`,
+      details: { via: 'env-admin' },
+    });
     return res.json({ success: true, token });
   }
-  const user = await User.findOne({ email: email?.toLowerCase().trim(), role: 'admin', isActive: true });
+  const user = await User.findOne({ email: attempted, role: 'admin', isActive: true });
   if (user && await user.comparePassword(password)) {
     const token = jwt.sign({ userId: user._id.toString(), email: user.email, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: '8h' });
+    await audit(req, {
+      action: 'auth.admin_login', category: 'auth',
+      actorEmail: user.email, actorName: user.name || '', actorRole: 'admin',
+      summary: `${user.email} opened the Admin Panel`,
+    });
     return res.json({ success: true, token });
   }
+  await audit(req, {
+    action: 'auth.admin_login_failed', category: 'auth', outcome: 'failure',
+    actorEmail: attempted, actorName: '', actorRole: '',
+    summary: `Failed Admin Panel sign-in for ${attempted || '(no email given)'}`,
+  });
   res.status(401).json({ error: 'Invalid email or password' });
 });
 
@@ -227,6 +282,12 @@ app.post('/api/auth/microsoft/exchange', async (req, res) => {
 
     const payload = { email, name, role, permissions };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+    await audit(req, {
+      action: 'auth.microsoft_login', category: 'auth',
+      actorEmail: email, actorName: name || '', actorRole: role,
+      summary: `${email} signed in with Microsoft`,
+      details: { method: 'microsoft', role },
+    });
     res.json({ success: true, token, user: { email, name, role, permissions } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -261,6 +322,12 @@ app.post('/api/auth/microsoft', async (req, res) => {
 
     const payload = { email, name, role, permissions };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+    await audit(req, {
+      action: 'auth.microsoft_login', category: 'auth',
+      actorEmail: email, actorName: name || '', actorRole: role,
+      summary: `${email} signed in with Microsoft`,
+      details: { method: 'microsoft-token' },
+    });
     res.json({ success: true, token, user: { email, name, role, permissions } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -381,6 +448,12 @@ app.post('/api/access-requests', async (req, res) => {
        <p>Log in to the <a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}/admin?tab=users">Admin Panel → Users</a> to approve or deny this request.</p>`
     );
 
+    await audit(req, {
+      action: 'access_request.created', category: 'access',
+      actorEmail: email, actorName: name || '', actorRole: 'viewer',
+      targetType: 'accessRequest', targetId: request._id, targetName: email,
+      summary: `${name || email} requested access to the Documents tab`,
+    });
     res.json({ success: true, requestId: request._id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -429,6 +502,12 @@ app.put('/api/access-requests/:id/approve', requireAdmin, async (req, res) => {
        <p><a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}">Click here to access Migration Docs</a></p>`
     );
 
+    await audit(req, {
+      action: 'access_request.approved', category: 'access',
+      targetType: 'accessRequest', targetId: request._id, targetName: request.email,
+      summary: `Admin granted Documents access to ${request.email}`,
+      details: { requestEmail: request.email, requestName: request.name || null },
+    });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -450,6 +529,12 @@ app.put('/api/access-requests/:id/deny', requireAdmin, async (req, res) => {
        <p>If you believe this is a mistake, please contact your administrator.</p>`
     );
 
+    await audit(req, {
+      action: 'access_request.denied', category: 'access',
+      targetType: 'accessRequest', targetId: request._id, targetName: request.email,
+      summary: `Admin denied the Documents access request from ${request.email}`,
+      details: { requestEmail: request.email, requestName: request.name || null },
+    });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -470,6 +555,12 @@ app.put('/api/access-requests/:id/revoke', requireAdmin, async (req, res) => {
       await user.save();
     }
 
+    await audit(req, {
+      action: 'access_request.revoked', category: 'access',
+      targetType: 'accessRequest', targetId: request._id, targetName: request.email,
+      summary: `Admin revoked Documents access for ${request.email}`,
+      details: { requestEmail: request.email, requestName: request.name || null },
+    });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -499,6 +590,12 @@ app.post('/api/users', requireAdmin, async (req, res) => {
     });
     const obj = user.toObject();
     delete obj.password;
+    await audit(req, {
+      action: 'user.created', category: 'user',
+      targetType: 'user', targetId: user._id, targetName: user.email,
+      summary: `Created ${user.role} account for ${user.email}`,
+      details: { role: user.role, permissions: user.permissions },
+    });
     res.json({ success: true, user: { ...obj, id: obj._id.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -521,6 +618,12 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
 
     const obj = user.toObject();
     delete obj.password;
+    await audit(req, {
+      action: 'user.updated', category: 'user',
+      targetType: 'user', targetId: user._id, targetName: user.email,
+      summary: `Updated account ${user.email}` + (Object.keys(update).length ? ` — ${Object.keys(update).join(", ")}` : "") + (password ? " — password reset" : ""),
+      details: { changed: Object.keys(update), passwordChanged: !!password, role: user.role, isActive: user.isActive },
+    });
     res.json({ success: true, user: { ...obj, id: obj._id.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -529,6 +632,12 @@ app.delete('/api/users/:id', requireAdmin, async (req, res) => {
   try {
     const user = await User.findByIdAndDelete(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
+    await audit(req, {
+      action: 'user.deleted', category: 'user',
+      targetType: 'user', targetId: user._id, targetName: user.email,
+      summary: `Deleted account ${user.email}`,
+      details: { role: user.role },
+    });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -766,7 +875,7 @@ app.post('/api/product-config', async (req, res) => {
     const maxOrder = await ProductConfig.findOne().sort({ order: -1 }).lean();
     const order = maxOrder ? (maxOrder.order || 0) + 1 : 0;
     const config = await ProductConfig.create({ name, combinations: combinations || [], featureListUrl: featureListUrl || '', order });
-    await recordLifecycle('productConfig', config.toObject(), 'created');
+    await recordLifecycle('productConfig', config.toObject(), 'created', req);
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations, featureListUrl: config.featureListUrl, order: config.order } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -781,6 +890,12 @@ app.put('/api/product-config/reorder', async (req, res) => {
       ProductConfig.findByIdAndUpdate(id, { order: idx })
     );
     await Promise.all(ops);
+    audit(req, {
+      action: 'content.reordered', category: 'content',
+      targetType: 'productConfig', targetName: 'display order',
+      summary: `Reordered ${(orderedIds || []).length} product types`,
+      details: { count: (orderedIds || []).length },
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -797,7 +912,7 @@ app.put('/api/product-config/:id', async (req, res) => {
     const before = await ProductConfig.findById(req.params.id).lean();
     const config = await ProductConfig.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!config) return res.status(404).json({ error: 'Not found' });
-    await recordRevision('productConfig', before, config);
+    await recordRevision('productConfig', before, config, req);
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations, featureListUrl: config.featureListUrl, order: config.order } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -812,6 +927,12 @@ app.put('/api/product-config/:id/reorder-combinations', async (req, res) => {
     if (!config) return res.status(404).json({ error: 'Not found' });
     config.combinations = combinations;
     await config.save();
+    audit(req, {
+      action: 'content.combinations_reordered', category: 'content',
+      targetType: 'productConfig', targetId: config._id, targetName: config.name,
+      summary: `Reordered the combinations of ${config.name}`,
+      details: { combinations },
+    });
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -828,7 +949,7 @@ app.post('/api/product-config/:id/combinations', async (req, res) => {
     const before = config.toObject();
     config.combinations.push(combination);
     await config.save();
-    await recordRevision('productConfig', before, config.toObject());
+    await recordRevision('productConfig', before, config.toObject(), req);
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -839,6 +960,12 @@ app.delete('/api/product-config/:id', async (req, res) => {
   try {
     const config = await ProductConfig.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!config) return res.status(404).json({ error: 'Not found' });
+    await audit(req, {
+      action: 'content.product_type_deleted', category: 'content',
+      targetType: 'productConfig', targetId: req.params.id,
+      targetName: (config && config.name) || '',
+      summary: `Product type "${(config && config.name) || req.params.id}" deleted`,
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -853,7 +980,7 @@ app.delete('/api/product-config/:id/combinations/:combo', async (req, res) => {
     const before = config.toObject();
     config.combinations = config.combinations.filter(c => c !== combo);
     await config.save();
-    await recordRevision('productConfig', before, config.toObject());
+    await recordRevision('productConfig', before, config.toObject(), req);
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -974,7 +1101,7 @@ app.delete('/api/features/by-scope', async (req, res) => {
     if (combination) filter.combination = combination;
     const affected = await Feature.find(filter).select('_id name').lean();
     const result = await Feature.updateMany(filter, { isDeleted: true, deletedAt: new Date() });
-    await recordRevisions('feature', affected.map(doc => ({ after: doc })), 'deleted');
+    await recordRevisions('feature', affected.map(doc => ({ after: doc })), 'deleted', req);
     res.json({ success: true, deletedCount: result.modifiedCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1139,7 +1266,7 @@ app.post('/api/features', async (req, res) => {
       screenshots: screenshots || [],
       order: nextOrder,
     });
-    await recordLifecycle('feature', feature.toObject(), 'created');
+    await recordLifecycle('feature', feature.toObject(), 'created', req);
     res.json({ success: true, feature: mapFeature(feature.toObject()) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1212,7 +1339,7 @@ app.post('/api/features/bulk', async (req, res) => {
     }));
 
     const saved = await Feature.insertMany(docs);
-    await recordRevisions('feature', saved.map(f => ({ after: f.toObject() })), 'created');
+    await recordRevisions('feature', saved.map(f => ({ after: f.toObject() })), 'created', req);
     const mapped = saved.map(f => mapFeature(f.toObject()));
     res.json({ success: true, features: mapped, count: mapped.length });
   } catch (err) {
@@ -1235,7 +1362,7 @@ app.put('/api/features/rename-family', async (req, res) => {
     await recordRevisions('feature', affected.map(doc => ({
       before: doc,
       after: { ...doc, family: newFamily },
-    })));
+    })), 'updated', req);
     res.json({ success: true, modified: result.modifiedCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1255,6 +1382,12 @@ app.put('/api/features/reorder', async (req, res) => {
       },
     }));
     await Feature.bulkWrite(ops);
+    audit(req, {
+      action: 'content.reordered', category: 'content',
+      targetType: 'feature', targetName: 'display order',
+      summary: `Reordered ${(orderedIds || []).length} features`,
+      details: { count: (orderedIds || []).length },
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1270,7 +1403,7 @@ app.put('/api/features/:id', async (req, res) => {
       { new: true, runValidators: true }
     ).lean();
     if (!feature) return res.status(404).json({ error: 'Feature not found' });
-    await recordRevision('feature', before, feature);
+    await recordRevision('feature', before, feature, req);
     res.json({ success: true, feature: mapFeature(feature) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1281,7 +1414,7 @@ app.delete('/api/features/:id', async (req, res) => {
   try {
     const feature = await Feature.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!feature) return res.status(404).json({ error: 'Feature not found' });
-    await recordLifecycle('feature', feature.toObject(), 'deleted');
+    await recordLifecycle('feature', feature.toObject(), 'deleted', req);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1473,7 +1606,208 @@ app.get('/api/internal/v1/word-doc', requireInternalKey, async (req, res) => {
     res.setHeader('Content-Length', built.buffer.length);
     res.setHeader('X-Doc-Filename', built.filename);
     res.setHeader('X-Doc-Stats', JSON.stringify(built.stats));
+    audit(req, {
+      action: 'api.word_doc_downloaded', category: 'api',
+      actorEmail: '', actorName: '', actorRole: 'internal-api',
+      targetType: 'features', targetName: `${productType}${combination ? ' / ' + combination : ''} (${scope})`,
+      summary: `Word document downloaded through the internal API — ${productType}${combination ? " / " + combination : ""} (${scope}), ${built.stats.features} features`,
+      details: { productType, combination, scope, ...built.stats },
+    });
     res.end(built.buffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Identity of whoever made a change, read from the Bearer token the client sends.
+// The content routes accept unauthenticated writes, so this can legitimately be
+// empty — the history then shows the change without an author rather than failing.
+function actorFrom(req) {
+  const decoded = req ? decodeToken(req) : null;
+  if (!decoded) return { actorEmail: '', actorName: '' };
+  return {
+    actorEmail: String(decoded.email || '').toLowerCase().trim(),
+    actorName: decoded.name || '',
+  };
+}
+
+// --------------- Audit Log ---------------
+//
+// Every entry answers "who did this, and when". Writes never throw and never block
+// the request: an action must not fail just because logging it failed.
+function requestIp(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return (forwarded || req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+}
+
+async function audit(req, entry) {
+  try {
+    const fromToken = req ? decodeToken(req) : null;
+    await AuditLog.create({
+      at: new Date(),
+      action: entry.action,
+      category: entry.category,
+      outcome: entry.outcome || 'success',
+      // An explicit actor wins: during a login the actor is the person attempting
+      // it, who has no token yet.
+      actorEmail: String(entry.actorEmail != null ? entry.actorEmail : (fromToken && fromToken.email) || '').toLowerCase().trim(),
+      actorName: entry.actorName != null ? entry.actorName : (fromToken && fromToken.name) || '',
+      actorRole: entry.actorRole != null ? entry.actorRole : (fromToken && fromToken.role) || '',
+      targetType: entry.targetType || '',
+      targetId: entry.targetId ? String(entry.targetId) : '',
+      targetName: entry.targetName || '',
+      summary: entry.summary || '',
+      details: entry.details,
+      ip: req ? requestIp(req) : '',
+      userAgent: req ? String(req.headers['user-agent'] || '').slice(0, 300) : '',
+    });
+  } catch (err) {
+    console.error('Audit write failed:', err.message);
+  }
+}
+
+// Shared by the listing and the CSV export.
+function buildAuditFilter(query) {
+  const { q, action, category, outcome, actorEmail, from, to, targetType } = query;
+  const filter = {};
+  if (action) filter.action = action;
+  if (category) filter.category = category;
+  if (outcome) filter.outcome = outcome;
+  if (targetType) filter.targetType = targetType;
+  if (actorEmail) filter.actorEmail = String(actorEmail).toLowerCase().trim();
+  if (from || to) {
+    filter.at = {};
+    if (from) filter.at.$gte = new Date(from);
+    if (to) {
+      const end = new Date(to);
+      // A bare date means the whole of that day.
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(to))) end.setHours(23, 59, 59, 999);
+      filter.at.$lte = end;
+    }
+  }
+  if (q) {
+    const rx = new RegExp(escapeRegex(String(q).trim()), 'i');
+    filter.$or = [{ summary: rx }, { actorEmail: rx }, { actorName: rx }, { targetName: rx }, { action: rx }];
+  }
+  return filter;
+}
+
+// Admin-only listing, newest first.
+// The export buttons build their file in the browser, so no request would
+// otherwise reach the server. The UI reports a completed download here.
+//
+// Deliberately narrow: the action is chosen from a fixed list and the actor is
+// taken from the token, so a caller cannot forge arbitrary audit entries.
+const DOWNLOAD_KINDS = {
+  features: 'Feature list',
+  compatibility: 'Compatibility matrix',
+  cloudInfo: 'Cloud info page',
+  document: 'Document',
+  export: 'Combined export',
+};
+const DOWNLOAD_FORMATS = ['docx', 'xlsx', 'pdf'];
+
+app.post('/api/audit/download', async (req, res) => {
+  try {
+    const { kind, format, productType, combination, scope, name } = req.body || {};
+    if (!DOWNLOAD_KINDS[kind] || !DOWNLOAD_FORMATS.includes(format)) {
+      return res.status(400).json({ error: 'Unknown download kind or format' });
+    }
+
+    const where = kind === 'features'
+      ? `${productType || ''}${combination ? ' / ' + combination : ''}${scope ? ' (' + scope + ')' : ''}`
+      : (name || '');
+
+    await audit(req, {
+      action: `download.${kind}`,
+      category: 'download',
+      targetType: kind,
+      targetName: where,
+      summary: `${DOWNLOAD_KINDS[kind]} downloaded as ${String(format).toUpperCase()}${where ? ' — ' + where : ''}`,
+      details: { format, productType, combination, scope, name },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/audit-logs', requireAdmin, async (req, res) => {
+  try {
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const filter = buildAuditFilter(req.query);
+
+    const [logs, total] = await Promise.all([
+      AuditLog.find(filter).sort({ at: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      AuditLog.countDocuments(filter),
+    ]);
+
+    res.json({
+      logs: logs.map(l => ({ ...l, id: String(l._id) })),
+      total,
+      page,
+      limit,
+      pages: Math.max(Math.ceil(total / limit), 1),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Values for the filter dropdowns, so they only offer what actually exists.
+app.get('/api/audit-logs/filters', requireAdmin, async (req, res) => {
+  try {
+    const [actions, categories, actors, targetTypes, total, oldest] = await Promise.all([
+      AuditLog.distinct('action'),
+      AuditLog.distinct('category'),
+      AuditLog.aggregate([
+        { $match: { actorEmail: { $ne: '' } } },
+        { $group: { _id: '$actorEmail', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 200 },
+      ]),
+      AuditLog.distinct('targetType'),
+      AuditLog.countDocuments({}),
+      AuditLog.findOne({}).sort({ at: 1 }).select('at').lean(),
+    ]);
+    res.json({
+      actions: actions.sort(),
+      categories: categories.sort(),
+      actors: actors.map(a => ({ email: a._id, count: a.count })),
+      targetTypes: targetTypes.filter(Boolean).sort(),
+      total,
+      trackingSince: oldest ? oldest.at : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CSV of whatever the current filter selects, for answering someone outside the tool.
+app.get('/api/audit-logs/export', requireAdmin, async (req, res) => {
+  try {
+    const logs = await AuditLog.find(buildAuditFilter(req.query)).sort({ at: -1 }).limit(5000).lean();
+    const cell = (v) => '"' + String(v == null ? '' : v).split('"').join('""') + '"';
+    const header = ['When', 'Who', 'Role', 'Action', 'Outcome', 'Target', 'Summary', 'IP'];
+    const rows = [header.map(cell).join(',')];
+    logs.forEach((l) => {
+      rows.push([
+        new Date(l.at).toISOString(),
+        l.actorEmail,
+        l.actorRole,
+        l.action,
+        l.outcome,
+        l.targetType + (l.targetName ? ': ' + l.targetName : ''),
+        l.summary,
+        l.ip,
+      ].map(cell).join(','));
+    });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="audit-log-' + stamp + '.csv"');
+    res.send(rows.join('\n'));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1483,7 +1817,16 @@ app.get('/api/internal/v1/word-doc', requireInternalKey, async (req, res) => {
 
 // Records what changed on a content record. Never throws into the request path:
 // failing to log history must not fail the edit itself.
-async function recordRevision(entityType, before, after) {
+// Human labels for audit summaries, so the log reads as sentences.
+const ENTITY_LABEL = {
+  feature: 'Feature',
+  compatibility: 'Compatibility matrix',
+  cloudInfo: 'Cloud info page',
+  document: 'Document',
+  productConfig: 'Product type',
+};
+
+async function recordRevision(entityType, before, after, req) {
   try {
     if (!before || !after) return;
     const changes = buildChanges(entityType, before, after);
@@ -1493,8 +1836,21 @@ async function recordRevision(entityType, before, after) {
       entityId: after._id || before._id,
       entityName: after.name || before.name || '',
       action: 'updated',
+      ...actorFrom(req),
       changedAt: new Date(),
       changes,
+    });
+
+    const name = after.name || before.name || '';
+    const fields = changes.map(c => c.label || c.field).join(', ');
+    await audit(req, {
+      action: 'content.updated',
+      category: 'content',
+      targetType: entityType,
+      targetId: after._id || before._id,
+      targetName: name,
+      summary: `${ENTITY_LABEL[entityType] || entityType} "${name}" updated — ${fields}`,
+      details: { fields: changes.map(c => c.label || c.field) },
     });
   } catch (err) {
     console.error(`Failed to record ${entityType} revision:`, err.message);
@@ -1843,7 +2199,7 @@ app.get('/api/history/:entityType/:entityId', async (req, res) => {
 // (family rename, bulk import, delete-by-scope). Without this, a bulk write is
 // invisible to history — and worse, it can swallow a change that a later per-row
 // save would otherwise have recorded.
-async function recordRevisions(entityType, pairs, action = 'updated') {
+async function recordRevisions(entityType, pairs, action = 'updated', req) {
   try {
     const docs = [];
     pairs.forEach(({ before, after }) => {
@@ -1857,11 +2213,25 @@ async function recordRevisions(entityType, pairs, action = 'updated') {
         entityId: after._id || (before && before._id),
         entityName: after.name || (before && before.name) || '',
         action,
+        ...actorFrom(req),
         changedAt: new Date(),
         changes,
       });
+
     });
     if (docs.length) await Revision.insertMany(docs, { ordered: false });
+
+    if (docs.length) {
+      const names = docs.map(d => d.entityName).filter(Boolean);
+      await audit(req, {
+        action: `content.bulk_${action}`,
+        category: 'content',
+        targetType: entityType,
+        targetName: names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3} more` : ''),
+        summary: `${docs.length} ${ENTITY_LABEL[entityType] || entityType} record(s) ${action} in one operation`,
+        details: { count: docs.length, names: names.slice(0, 50) },
+      });
+    }
   } catch (err) {
     console.error(`Failed to record ${entityType} ${action} revisions:`, err.message);
   }
@@ -1869,7 +2239,7 @@ async function recordRevisions(entityType, pairs, action = 'updated') {
 
 // Records a record being added or removed. A 'created' entry carries the values the
 // record started with, which is what anchors the "created: …" step of every chain.
-async function recordLifecycle(entityType, doc, action) {
+async function recordLifecycle(entityType, doc, action, req) {
   try {
     if (!doc) return;
     await Revision.create({
@@ -1877,8 +2247,18 @@ async function recordLifecycle(entityType, doc, action) {
       entityId: doc._id,
       entityName: doc.name || '',
       action,
+      ...actorFrom(req),
       changedAt: new Date(),
       changes: action === 'created' ? buildInitialChanges(entityType, doc) : [],
+    });
+
+    await audit(req, {
+      action: `content.${action}`,
+      category: 'content',
+      targetType: entityType,
+      targetId: doc._id,
+      targetName: doc.name || '',
+      summary: `${ENTITY_LABEL[entityType] || entityType} "${doc.name || ''}" ${action}`,
     });
   } catch (err) {
     console.error(`Failed to record ${entityType} ${action}:`, err.message);
@@ -1925,6 +2305,12 @@ app.post('/api/screenshots', (req, res) => {
         // --- End Cloudinary path ---
         const relativePath = path.relative(assetsDir, f.path).replace(/\\/g, '/');
         return `/assets/${relativePath}`;
+      });
+      audit(req, {
+        action: 'upload.screenshots', category: 'content',
+        targetType: 'screenshot', targetName: `${paths.length} file(s)`,
+        summary: `Uploaded ${paths.length} screenshot(s)`,
+        details: { paths },
       });
       res.json({ success: true, paths });
     } catch (innerErr) {
@@ -1973,7 +2359,7 @@ app.post('/api/compatibility', async (req, res) => {
     const maxOrder = await CompatibilityMatrix.findOne().sort({ order: -1 }).lean();
     const order = maxOrder ? (maxOrder.order || 0) + 1 : 0;
     const matrix = await CompatibilityMatrix.create({ name, slug, columns, rows, notes: notes || '', order });
-    await recordLifecycle('compatibility', matrix.toObject(), 'created');
+    await recordLifecycle('compatibility', matrix.toObject(), 'created', req);
     res.json({ success: true, matrix: { ...matrix.toObject(), id: matrix._id.toString() } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1989,6 +2375,12 @@ app.put('/api/compatibility/reorder', async (req, res) => {
       updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
     }));
     await CompatibilityMatrix.bulkWrite(ops);
+    audit(req, {
+      action: 'content.reordered', category: 'content',
+      targetType: 'compatibility', targetName: 'display order',
+      summary: `Reordered ${(orderedIds || []).length} compatibility matrices`,
+      details: { count: (orderedIds || []).length },
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2011,7 +2403,7 @@ app.put('/api/compatibility/:id', async (req, res) => {
     const before = await CompatibilityMatrix.findById(req.params.id).lean();
     const matrix = await CompatibilityMatrix.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
-    await recordRevision('compatibility', before, matrix);
+    await recordRevision('compatibility', before, matrix, req);
     res.json({ success: true, matrix: { ...matrix, id: matrix._id.toString() } });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2022,7 +2414,7 @@ app.delete('/api/compatibility/:id', async (req, res) => {
   try {
     const matrix = await CompatibilityMatrix.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
-    await recordLifecycle('compatibility', matrix.toObject(), 'deleted');
+    await recordLifecycle('compatibility', matrix.toObject(), 'deleted', req);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2067,7 +2459,7 @@ app.post('/api/cloud-info', async (req, res) => {
     if (existing) slug = slug + '-' + Date.now();
     const count = await CloudInfo.countDocuments();
     const item = await CloudInfo.create({ name, slug, content: content || '', order: count });
-    await recordLifecycle('cloudInfo', item.toObject(), 'created');
+    await recordLifecycle('cloudInfo', item.toObject(), 'created', req);
     res.json({
       success: true,
       item: { ...item.toObject(), id: item._id.toString() },
@@ -2100,7 +2492,7 @@ app.put('/api/cloud-info/:id', async (req, res) => {
     const before = await CloudInfo.findById(req.params.id).lean();
     const item = await CloudInfo.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ error: 'Not found' });
-    await recordRevision('cloudInfo', before, item);
+    await recordRevision('cloudInfo', before, item, req);
     res.json({
       success: true,
       item: { ...item, id: item._id.toString() },
@@ -2115,7 +2507,7 @@ app.delete('/api/cloud-info/:id', async (req, res) => {
   try {
     const item = await CloudInfo.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!item) return res.status(404).json({ error: 'Not found' });
-    await recordLifecycle('cloudInfo', item.toObject(), 'deleted');
+    await recordLifecycle('cloudInfo', item.toObject(), 'deleted', req);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2130,6 +2522,12 @@ app.put('/api/cloud-info-reorder', async (req, res) => {
       updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
     }));
     await CloudInfo.bulkWrite(ops);
+    audit(req, {
+      action: 'content.reordered', category: 'content',
+      targetType: 'cloudInfo', targetName: 'display order',
+      summary: `Reordered ${(orderedIds || []).length} cloud info pages`,
+      details: { count: (orderedIds || []).length },
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2165,6 +2563,12 @@ app.put('/api/documents/reorder', async (req, res) => {
       updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
     }));
     await DocModel.bulkWrite(ops);
+    audit(req, {
+      action: 'content.reordered', category: 'content',
+      targetType: 'document', targetName: 'display order',
+      summary: `Reordered ${(orderedIds || []).length} documents`,
+      details: { count: (orderedIds || []).length },
+    });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2180,7 +2584,7 @@ app.post('/api/documents', async (req, res) => {
     const item = await DocModel.create({
       name, slug, content: content || '', fileType: fileType || 'manual', order: count,
     });
-    await recordLifecycle('document', item.toObject(), 'created');
+    await recordLifecycle('document', item.toObject(), 'created', req);
     res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2231,6 +2635,12 @@ app.post('/api/documents/upload', docUpload.single('file'), async (req, res) => 
 
     const count = await DocModel.countDocuments();
     const item = await DocModel.create({ name, slug, content, fileUrl, fileType, order: count });
+    audit(req, {
+      action: 'upload.document_file', category: 'content',
+      targetType: 'document', targetName: (req.file && req.file.originalname) || '',
+      summary: `Uploaded document file ${(req.file && req.file.originalname) || ''}`,
+      details: { size: req.file && req.file.size, mimetype: req.file && req.file.mimetype },
+    });
     res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2250,7 +2660,7 @@ app.put('/api/documents/:id', async (req, res) => {
     const before = await DocModel.findById(req.params.id).lean();
     const item = await DocModel.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ error: 'Not found' });
-    await recordRevision('document', before, item);
+    await recordRevision('document', before, item, req);
     res.json({ success: true, item: { ...item, id: item._id.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2259,7 +2669,7 @@ app.delete('/api/documents/:id', async (req, res) => {
   try {
     const item = await DocModel.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!item) return res.status(404).json({ error: 'Not found' });
-    await recordLifecycle('document', item.toObject(), 'deleted');
+    await recordLifecycle('document', item.toObject(), 'deleted', req);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2325,6 +2735,11 @@ app.put('/api/trash/restore/:type/:id', async (req, res) => {
       comboTrash.isDeleted = false;
       comboTrash.deletedAt = null;
       await comboTrash.save();
+      await audit(req, {
+        action: 'content.restored_from_trash', category: 'content',
+        targetType: String(req.params.type), targetId: req.params.id,
+        summary: `Restored ${req.params.type} from Trash`,
+      });
       return res.json({ success: true });
     }
 
@@ -2352,6 +2767,11 @@ app.delete('/api/trash/permanent/:type/:id', async (req, res) => {
       if (!doc) return res.status(404).json({ error: 'Not found' });
       if (!doc.isDeleted) return res.status(400).json({ error: 'Item is not in trash' });
       await DeletedCombination.findByIdAndDelete(id);
+      await audit(req, {
+        action: 'content.permanently_deleted', category: 'content',
+        targetType: String(req.params.type), targetId: req.params.id,
+        summary: `Permanently deleted ${req.params.type} from Trash`,
+      });
       return res.json({ success: true });
     }
 

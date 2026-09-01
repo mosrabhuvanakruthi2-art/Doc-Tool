@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
+import { reportDownload } from '../reportDownload';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
 
@@ -301,6 +302,7 @@ function CloudInfoPage({ slug }) {
       const blob = await Packer.toBlob(doc);
       const filename = title.replace(/[^a-zA-Z0-9 ]/g, '').replace(/\s+/g, '_') + '.docx';
       saveAs(blob, filename);
+      reportDownload('cloudInfo', 'docx', { name: title });
     } catch (err) {
       console.error('Cloud Info export failed:', err);
     } finally {

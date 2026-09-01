@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import { reportDownload } from '../reportDownload';
 import html2pdf from 'html2pdf.js';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import { saveAs } from 'file-saver';
@@ -147,6 +148,7 @@ function ExportPage({ onBack }) {
       const docFile = new Document({ sections: [{ children }] });
       const blob = await Packer.toBlob(docFile);
       saveAs(blob, getExportFilename(productType, combination, 'docx'));
+      reportDownload('export', 'docx', { productType, combination, name: combination || productType });
 
       showToast('DOCX downloaded!');
     } catch (err) {

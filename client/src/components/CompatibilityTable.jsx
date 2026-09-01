@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
+import { reportDownload } from '../reportDownload';
 import * as XLSX from 'xlsx';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
@@ -73,6 +74,7 @@ function CompatibilityTable({ matrixSlug }) {
       const safeName = name.replace(/[\\/*?:\[\]]/g, '_').slice(0, 31);
       XLSX.utils.book_append_sheet(wb, ws, safeName);
       XLSX.writeFile(wb, getFilename(name, 'xlsx'));
+      reportDownload('compatibility', 'xlsx', { name });
     } catch (err) {
       console.error('Excel download error:', err);
     }
@@ -159,6 +161,7 @@ function CompatibilityTable({ matrixSlug }) {
       const doc = new Document({ sections: [{ children }] });
       const blob = await Packer.toBlob(doc);
       saveAs(blob, getFilename(name, 'docx'));
+      reportDownload('compatibility', 'docx', { name });
     } catch (_) {}
     setDownloading('');
   };

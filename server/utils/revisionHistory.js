@@ -47,6 +47,8 @@ function buildFieldChains(entityType, revisions, liveDoc) {
         append(change.field, {
           stage: 'created',
           at: revision.changedAt,
+          by: revision.actorEmail || '',
+          byName: revision.actorName || '',
           summary: change.summary,
           ...stepValue(change, 'after'),
         });
@@ -65,6 +67,8 @@ function buildFieldChains(entityType, revisions, liveDoc) {
       append(change.field, {
         stage: 'updated',
         at: revision.changedAt,
+        by: revision.actorEmail || '',
+        byName: revision.actorName || '',
         summary: change.summary,
         added: change.added,
         removed: change.removed,

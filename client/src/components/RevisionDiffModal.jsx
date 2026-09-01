@@ -293,6 +293,12 @@ function FieldChain({ field }) {
             <div className="chain-stage">
               {STAGE_LABEL[step.stage] || step.stage}
               {step.at && <span className="chain-at">{formatWhen(step.at)}</span>}
+              {step.by && (
+                <span className="chain-by" title={step.byName ? step.byName + " · " + step.by : step.by}>
+                  {step.by}
+                </span>
+              )}
+              {step.at && !step.by && <span className="chain-by chain-by-unknown">author not recorded</span>}
               {step.untracked && <span className="chain-at">not recorded</span>}
             </div>
             <div className="chain-body">

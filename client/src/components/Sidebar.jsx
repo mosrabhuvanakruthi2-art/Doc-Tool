@@ -55,6 +55,12 @@ const CLOUD_INFO_ICON = (
   </svg>
 );
 
+const HOME_ICON = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z" />
+  </svg>
+);
+
 const COMPAT_MATRICES_CHANGED = 'docproject:compat-matrices-changed';
 
 function Sidebar() {
@@ -64,6 +70,8 @@ function Sidebar() {
   const activeCombination = searchParams.get('combination') || '';
   const activeMatrix = searchParams.get('matrix') || '';
   const activeView = searchParams.get('view') || '';
+  // MainContent shows the welcome dashboard when nothing is selected.
+  const isDashboard = !searchParams.get('product') && !searchParams.get('combination') && !activeView;
   const [expandedProduct, setExpandedProduct] = useState('');
   const [compatExpanded, setCompatExpanded] = useState(false);
   const [cloudInfoExpanded, setCloudInfoExpanded] = useState(false);
@@ -112,6 +120,48 @@ function Sidebar() {
     };
   }, []);
 
+  // Reveal whichever section the current page belongs to. This runs only when the
+  // URL itself changes, so manually closing a menu does not spring it back open.
+  const urlProduct = searchParams.get('product') || '';
+  useEffect(() => {
+    if (!urlProduct) return;
+    setExpandedProduct(urlProduct);
+    setCompatExpanded(false);
+    setCloudInfoExpanded(false);
+    setDocsExpanded(false);
+  }, [urlProduct]);
+
+  useEffect(() => {
+    if (activeView === 'compatibility') {
+      setCompatExpanded(true);
+      setExpandedProduct('');
+      setCloudInfoExpanded(false);
+      setDocsExpanded(false);
+    } else if (activeView === 'cloudinfo') {
+      setCloudInfoExpanded(true);
+      setExpandedProduct('');
+      setCompatExpanded(false);
+      setDocsExpanded(false);
+    } else if (activeView === 'documents') {
+      setDocsExpanded(true);
+      setExpandedProduct('');
+      setCompatExpanded(false);
+      setCloudInfoExpanded(false);
+    }
+  }, [activeView]);
+
+  // The dashboard is simply the page with no query at all, so returning to it
+  // means clearing the search params and closing every open menu.
+  const goDashboard = () => {
+    setExpandedProduct('');
+    setCompatExpanded(false);
+    setCloudInfoExpanded(false);
+    setDocsExpanded(false);
+    setSearchParams(new URLSearchParams());
+  };
+
+  // Opening or closing a section is only that: the page you are reading stays put.
+  // Navigation happens when a combination is clicked, or via Dashboard.
   const handleProductClick = (slug) => {
     if (collapsed) {
       setCollapsed(false);
@@ -119,18 +169,12 @@ function Sidebar() {
     }
     if (expandedProduct === slug) {
       setExpandedProduct('');
-      const params = new URLSearchParams(searchParams);
-      params.delete('product');
-      params.delete('combination');
-      setSearchParams(params);
-    } else {
-      setExpandedProduct(slug);
-      setCompatExpanded(false);
-      setCloudInfoExpanded(false);
-      setDocsExpanded(false);
-      const params = new URLSearchParams();
-      setSearchParams(params);
+      return;
     }
+    setExpandedProduct(slug);
+    setCompatExpanded(false);
+    setCloudInfoExpanded(false);
+    setDocsExpanded(false);
   };
 
   const handleCombinationClick = (product, combo) => {
@@ -152,14 +196,10 @@ function Sidebar() {
       setCollapsed(false);
       return;
     }
-    const wasExpanded = compatExpanded;
     setCompatExpanded(prev => !prev);
     setExpandedProduct('');
     setCloudInfoExpanded(false);
     setDocsExpanded(false);
-    if (wasExpanded) {
-      setSearchParams(new URLSearchParams());
-    }
   };
 
   const handleMatrixClick = (slug) => {
@@ -174,14 +214,10 @@ function Sidebar() {
       setCollapsed(false);
       return;
     }
-    const wasExpanded = cloudInfoExpanded;
     setCloudInfoExpanded(prev => !prev);
     setExpandedProduct('');
     setCompatExpanded(false);
     setDocsExpanded(false);
-    if (wasExpanded) {
-      setSearchParams(new URLSearchParams());
-    }
   };
 
   const handleDocsToggle = () => {
@@ -189,14 +225,10 @@ function Sidebar() {
       setCollapsed(false);
       return;
     }
-    const wasExpanded = docsExpanded;
     setDocsExpanded(prev => !prev);
     setExpandedProduct('');
     setCompatExpanded(false);
     setCloudInfoExpanded(false);
-    if (wasExpanded) {
-      setSearchParams(new URLSearchParams());
-    }
   };
 
   const handleDocClick = (slug) => {
@@ -256,6 +288,24 @@ function Sidebar() {
       >
         {!collapsed && (
           <>
+            {/* Dashboard — the plain "/" view, above everything else */}
+            <div className="sidebar-nav-section sidebar-dashboard-section">
+              <ul className="sidebar-items">
+                <li>
+                  <button
+                    className={`sidebar-product-btn ${isDashboard ? 'active' : ''}`}
+                    onClick={goDashboard}
+                    title="Dashboard"
+                  >
+                    <span className="sidebar-product-icon-label">
+                      {HOME_ICON}
+                      <span>Dashboard</span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+
             {/* Product Types dropdown section */}
             {hasPermission('productTypes') && (
             <div className="sidebar-nav-section">
@@ -459,6 +509,15 @@ function Sidebar() {
 
         {collapsed && (
           <ul className="sidebar-items">
+            <li>
+              <button
+                className={`sidebar-product-btn ${isDashboard ? 'active' : ''}`}
+                onClick={() => { setCollapsed(false); goDashboard(); }}
+                title="Dashboard"
+              >
+                <span className="sidebar-product-icon-label">{HOME_ICON}</span>
+              </button>
+            </li>
             {productTypes.map(pt => (
               <li key={pt}>
                 <button

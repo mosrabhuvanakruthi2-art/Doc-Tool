@@ -113,11 +113,12 @@ function EditFeatureTab({ refreshKey, onChanged }) {
   const [features, setFeatures] = useState([]);
   const [originalFeatures, setOriginalFeatures] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [reordering, setReordering] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [isOffline, setIsOffline] = useState(false);
   const [editingIds, setEditingIds] = useState(new Set());
+  // Only the card being saved shows its own progress.
+  const [savingId, setSavingId] = useState(null);
   const [deletePTConfirm, setDeletePTConfirm] = useState(false);
   const [deleteComboAllConfirm, setDeleteComboAllConfirm] = useState(false);
   const [showComboRename, setShowComboRename] = useState(false);
@@ -255,26 +256,25 @@ function EditFeatureTab({ refreshKey, onChanged }) {
     return data.paths;
   };
 
-  const handleSaveAll = async () => {
-    const dirtyFeatures = features.filter(f => f._dirty);
-    if (dirtyFeatures.length === 0) {
-      showToast('No changes to save.', 'error');
+  // Saves one feature. Family is still renamed across the whole group when it
+  // changes, matching how the bulk save behaved — a family is a shared tag, not a
+  // per-feature value.
+  const handleSaveOne = async (featureId) => {
+    const feature = features.find(f => f.id === featureId);
+    if (!feature) return;
+    if (!feature.name.trim()) {
+      showToast('Feature name is required.', 'error');
       return;
     }
 
-    setSaving(true);
-    let savedCount = 0;
-
+    setSavingId(featureId);
     try {
-      const familyRenames = new Map();
-      for (const feature of dirtyFeatures) {
-        const orig = originalFeatures.find(f => f.id === feature.id);
-        if (orig && orig.family && feature.family && orig.family.trim() !== feature.family.trim()) {
-          familyRenames.set(orig.family.trim(), feature.family.trim());
-        }
-      }
+      const orig = originalFeatures.find(f => f.id === featureId);
+      const newFamily = feature.family ? feature.family.trim() : '';
+      const oldFamily = orig && orig.family ? orig.family.trim() : '';
+      let familyRenamed = false;
 
-      for (const [oldFamily, newFamily] of familyRenames) {
+      if (oldFamily && newFamily && oldFamily !== newFamily) {
         await fetch('/api/features/rename-family', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -286,49 +286,44 @@ function EditFeatureTab({ refreshKey, onChanged }) {
             newFamily,
           }),
         });
+        familyRenamed = true;
       }
 
-      for (let i = 0; i < features.length; i++) {
-        const feature = features[i];
-        if (!feature._dirty) continue;
-        if (!feature.name.trim()) continue;
-
-        let screenshotPaths = [...(feature.screenshots || [])];
-        if (feature._pendingFiles && feature._pendingFiles.length > 0) {
-          const uploaded = await uploadScreenshots(feature._pendingFiles, feature.name.trim());
-          screenshotPaths = [...screenshotPaths, ...uploaded];
-        }
-
-        const newFamily = feature.family ? feature.family.trim() : '';
-        const res = await fetch(`/api/features/${feature.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: feature.name.trim(),
-            description: (feature.description || '').trim(),
-            family: newFamily,
-            screenshots: screenshotPaths,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
-        savedCount++;
+      let screenshotPaths = [...(feature.screenshots || [])];
+      if (feature._pendingFiles && feature._pendingFiles.length > 0) {
+        const uploaded = await uploadScreenshots(feature._pendingFiles, feature.name.trim());
+        screenshotPaths = [...screenshotPaths, ...uploaded];
       }
 
-      const renameCount = familyRenames.size;
-      let msg = `${savedCount} feature${savedCount !== 1 ? 's' : ''} updated successfully!`;
-      if (renameCount > 0) {
-        msg += ` ${renameCount} family name${renameCount !== 1 ? 's' : ''} renamed across all features.`;
-      }
+      const res = await fetch(`/api/features/${feature.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: feature.name.trim(),
+          description: (feature.description || '').trim(),
+          family: newFamily,
+          screenshots: screenshotPaths,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      let msg = `"${feature.name.trim()}" updated successfully!`;
+      if (familyRenamed) msg += ' Family renamed across all features in that group.';
       showToast(msg);
       if (onChanged) onChanged();
-      setEditingIds(new Set());
+
+      // leave edit mode for this card only
+      setEditingIds(prev => {
+        const next = new Set(prev);
+        next.delete(featureId);
+        return next;
+      });
       fetchFiltered();
     } catch (err) {
       showToast('Update failed: ' + err.message, 'error');
     }
-
-    setSaving(false);
+    setSavingId(null);
   };
 
   const handleDelete = async (id) => {
@@ -580,7 +575,6 @@ function EditFeatureTab({ refreshKey, onChanged }) {
     persistOrder(reordered);
   }, [features, onChanged]);
 
-  const dirtyCount = features.filter(f => f._dirty).length;
 
   return (
     <div className="scope-form">
@@ -856,27 +850,50 @@ function EditFeatureTab({ refreshKey, onChanged }) {
                           <ReadOnlyFeature feature={feature} index={idx} />
                         )}
                         <div className="edit-feature-actions">
-                          <button
-                            className={`btn-edit ${isEditing ? 'active' : ''}`}
-                            onClick={() => toggleEdit(feature.id)}
-                            disabled={isOffline}
-                          >
-                            {isEditing ? 'Cancel Edit' : 'Edit'}
-                          </button>
-                          {deleteConfirm === feature.id ? (
-                            <div className="delete-confirm">
-                              <span>Delete this feature?</span>
-                              <button className="btn-yes" onClick={() => handleDelete(feature.id)}>Yes</button>
-                              <button className="btn-no" onClick={() => setDeleteConfirm(null)}>No</button>
-                            </div>
+                          {isEditing ? (
+                            <>
+                              <button
+                                type="button"
+                                className="btn-save"
+                                onClick={() => handleSaveOne(feature.id)}
+                                disabled={isOffline || savingId === feature.id}
+                              >
+                                {savingId === feature.id ? 'Saving...' : 'Save'}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-cancel"
+                                onClick={() => toggleEdit(feature.id)}
+                                disabled={savingId === feature.id}
+                              >
+                                Cancel
+                              </button>
+                            </>
                           ) : (
-                            <button
-                              className="btn-delete"
-                              onClick={() => setDeleteConfirm(feature.id)}
-                              disabled={isOffline}
-                            >
-                              Delete
-                            </button>
+                            <>
+                              <button
+                                className="btn-edit"
+                                onClick={() => toggleEdit(feature.id)}
+                                disabled={isOffline}
+                              >
+                                Edit
+                              </button>
+                              {deleteConfirm === feature.id ? (
+                                <div className="delete-confirm">
+                                  <span>Delete this feature?</span>
+                                  <button className="btn-yes" onClick={() => handleDelete(feature.id)}>Yes</button>
+                                  <button className="btn-no" onClick={() => setDeleteConfirm(null)}>No</button>
+                                </div>
+                              ) : (
+                                <button
+                                  className="btn-delete"
+                                  onClick={() => setDeleteConfirm(feature.id)}
+                                  disabled={isOffline}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
@@ -885,18 +902,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
                 })}
               </div>
 
-              {dirtyCount > 0 && (
-                <div className="form-actions">
-                  <button
-                    type="button"
-                    className="btn-save"
-                    onClick={handleSaveAll}
-                    disabled={saving || isOffline}
-                  >
-                    {saving ? 'Saving...' : `Save All Changes (${dirtyCount})`}
-                  </button>
-                </div>
-              )}
+              {/* Each card saves itself, so there is no bulk save bar. */}
             </>
           )}
         </div>

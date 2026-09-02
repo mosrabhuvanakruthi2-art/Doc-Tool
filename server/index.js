@@ -1843,14 +1843,27 @@ async function recordRevision(entityType, before, after, req) {
 
     const name = after.name || before.name || '';
     const fields = changes.map(c => c.label || c.field).join(', ');
+    // A feature name alone is ambiguous — the same name exists under other
+    // combinations — so the summary carries the place it lives.
+    const scopeWord = after.scope === 'outscope' ? 'Out of Scope' : 'In Scope';
+    const where = entityType === 'feature' && after.productType
+      ? ` in ${after.productType}${after.combination ? ' / ' + after.combination : ''} (${scopeWord})`
+      : '';
     await audit(req, {
       action: 'content.updated',
       category: 'content',
       targetType: entityType,
       targetId: after._id || before._id,
       targetName: name,
-      summary: `${ENTITY_LABEL[entityType] || entityType} "${name}" updated — ${fields}`,
-      details: { fields: changes.map(c => c.label || c.field) },
+      summary: `${ENTITY_LABEL[entityType] || entityType} "${name}"${where} updated — ${fields}`,
+      details: {
+        fields: changes.map(c => c.label || c.field),
+        ...(entityType === 'feature' ? {
+          productType: after.productType,
+          combination: after.combination,
+          scope: after.scope,
+        } : {}),
+      },
     });
   } catch (err) {
     console.error(`Failed to record ${entityType} revision:`, err.message);
@@ -1968,13 +1981,20 @@ app.get('/api/notifications', async (req, res) => {
         if (!feature) return; // hard-deleted row, nothing to point at
         // Lead with the product type, then the combination, so the message reads
         // like the place it happened: In Message, "Slack to Chat" was updated.
-        const scopeSuffix = feature.scope === 'outscope' ? ' (Outscope)' : '';
-        const verb = revision.action === 'created' ? 'has new content' : 'was updated';
+        // Say where it happened, which row it was, and what changed about it.
+        // "Slack to Chat was updated" is true but tells the reader nothing.
+        const scopeWord = feature.scope === 'outscope' ? 'Out of Scope' : 'In Scope';
+        const place = `${feature.productType}${feature.combination ? ' / ' + feature.combination : ''} (${scopeWord})`;
+        const fieldList = (revision.changes || []).map(c => c.label || c.field).filter(Boolean);
         key = `feature|${feature.productType}|${feature.combination}|${feature.scope}`;
         title = feature.combination || feature.productType;
-        message = feature.combination
-          ? `In ${feature.productType}, "${feature.combination}"${scopeSuffix} ${verb} — please check`
-          : `In ${feature.productType}${scopeSuffix}, features ${verb} — please check`;
+        if (revision.action === 'created') {
+          message = `${place}: new feature "${revision.entityName}" added`;
+        } else if (revision.action === 'deleted') {
+          message = `${place}: feature "${revision.entityName}" removed`;
+        } else {
+          message = `${place}: "${revision.entityName}"` + (fieldList.length ? ` — ${fieldList.join(', ')} updated` : ' updated');
+        }
         link = { product: feature.productType, combination: feature.combination, section: feature.scope };
       } else if (revision.entityType === 'productConfig') {
         // "Something new appeared" and "it was later edited" are different events.
@@ -2022,16 +2042,27 @@ app.get('/api/notifications', async (req, res) => {
 
       const existing = groups.get(key);
       if (existing) {
-        existing.count += 1;
+        // Count only what is new to this reader: without this, one edit reported the
+        // entire recorded history of the page.
+        const revisionIsNew = isUnread(revision.changedAt, seenAt, readAt.get(key));
+        if (revisionIsNew) existing.count += 1;
+        // Newest first, so the message is already set. Note the other rows the
+        // group covers so the reader sees the scale.
+        if (revisionIsNew && revision.entityName && revision.entityName !== existing.entityName
+          && !existing.alsoChanged.includes(revision.entityName)) {
+          existing.alsoChanged.push(revision.entityName);
+        }
         return; // revisions arrive newest first, so the first one already set the time
       }
       groups.set(key, {
         key,
         entityType: revision.entityType,
+        entityName: revision.entityName,
+        alsoChanged: [],
         title,
         message,
         at: revision.changedAt,
-        count: 1,
+        count: isUnread(revision.changedAt, seenAt, readAt.get(key)) ? 1 : 0,
         link,
         unread: isUnread(revision.changedAt, seenAt, readAt.get(key)),
       });
@@ -2039,6 +2070,15 @@ app.get('/api/notifications', async (req, res) => {
 
     // Unread entries are never dropped by the display cap; read ones fill what is
     // left. The final list stays in newest-first order.
+    // A group can cover several rows; name one more and count the rest.
+    groups.forEach((item) => {
+      const others = item.alsoChanged || [];
+      if (!others.length) return;
+      item.message += others.length === 1
+        ? ` · also "${others[0]}"`
+        : ` · also "${others[0]}" and ${others.length - 1} more`;
+    });
+
     const all = [...groups.values()].sort((a, b) => new Date(b.at) - new Date(a.at));
     const unreadItems = all.filter(i => i.unread);
     const readItems = all.filter(i => !i.unread);
@@ -2223,13 +2263,31 @@ async function recordRevisions(entityType, pairs, action = 'updated', req) {
 
     if (docs.length) {
       const names = docs.map(d => d.entityName).filter(Boolean);
+      // A bulk save always targets one product type / scope / combination, so the
+      // whole batch shares a location.
+      const firstDoc = (pairs.find(p => p && p.after) || {}).after || {};
+      const bulkScope = firstDoc.scope === 'outscope' ? 'Out of Scope' : 'In Scope';
+      const bulkWhere = entityType === 'feature' && firstDoc.productType
+        ? ` in ${firstDoc.productType}${firstDoc.combination ? ' / ' + firstDoc.combination : ''} (${bulkScope})`
+        : ''
+      ;
       await audit(req, {
         action: `content.bulk_${action}`,
         category: 'content',
         targetType: entityType,
         targetName: names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3} more` : ''),
-        summary: `${docs.length} ${ENTITY_LABEL[entityType] || entityType} record(s) ${action} in one operation`,
-        details: { count: docs.length, names: names.slice(0, 50) },
+        // One row reads like a single create; several are listed by name.
+        summary: docs.length === 1
+          ? `${ENTITY_LABEL[entityType] || entityType} "${names[0] || ''}"${bulkWhere} ${action}`
+          : `${docs.length} ${ENTITY_LABEL[entityType] || entityType} records ${action}${bulkWhere}`
+            + (names.length ? ` — ${names.slice(0, 5).join(', ')}${names.length > 5 ? ` and ${names.length - 5} more` : ''}` : ''),
+        details: {
+          count: docs.length,
+          names: names.slice(0, 50),
+          productType: firstDoc.productType,
+          combination: firstDoc.combination,
+          scope: firstDoc.scope,
+        },
       });
     }
   } catch (err) {
@@ -2252,13 +2310,19 @@ async function recordLifecycle(entityType, doc, action, req) {
       changes: action === 'created' ? buildInitialChanges(entityType, doc) : [],
     });
 
+    // Same reasoning as content.updated: a name on its own does not say where the
+    // row lives, and the same name exists under other combinations.
+    const lifecycleScope = doc.scope === 'outscope' ? 'Out of Scope' : 'In Scope';
+    const lifecycleWhere = entityType === 'feature' && doc.productType
+      ? ` in ${doc.productType}${doc.combination ? ' / ' + doc.combination : ''} (${lifecycleScope})`
+      : '';
     await audit(req, {
       action: `content.${action}`,
       category: 'content',
       targetType: entityType,
       targetId: doc._id,
       targetName: doc.name || '',
-      summary: `${ENTITY_LABEL[entityType] || entityType} "${doc.name || ''}" ${action}`,
+      summary: `${ENTITY_LABEL[entityType] || entityType} "${doc.name || ''}"${lifecycleWhere} ${action}`,
     });
   } catch (err) {
     console.error(`Failed to record ${entityType} ${action}:`, err.message);

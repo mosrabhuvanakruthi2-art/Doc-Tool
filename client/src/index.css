@@ -5560,3 +5560,10 @@ a:hover { text-decoration: underline; }
   .audit-col-action { width: auto; }
   .audit-table { font-size: 12px; }
 }
+
+/* Dashboard entry sits above the grouped sections */
+.sidebar-dashboard-section {
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-color);
+}

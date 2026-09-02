@@ -272,7 +272,9 @@ function AuditLog() {
                         </td>
                         <td className="audit-col-what">
                           <span className="audit-summary">{log.summary || '—'}</span>
-                          {log.targetType && (
+                          {/* Only worth a second line when it adds something the
+                              summary does not already say. */}
+                          {log.targetType && !(log.targetName && log.summary.includes(log.targetName)) && (
                             <span className="audit-target">
                               {TARGET_LABEL[log.targetType] || log.targetType}
                               {log.targetName ? `: ${log.targetName}` : ''}

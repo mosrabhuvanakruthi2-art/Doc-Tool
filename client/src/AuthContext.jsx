@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { reportLogout } from './reportDownload';
 
 const AuthContext = createContext(null);
 
@@ -66,6 +67,7 @@ export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
   };
 
   const logout = () => {
+    reportLogout('docs'); // must run before the token is cleared
     sessionStorage.removeItem('docs_token');
     setToken('');
     setUser(null);

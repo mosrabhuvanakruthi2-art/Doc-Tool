@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { reportLogout } from './reportDownload';
 import { Routes, Route, useSearchParams } from 'react-router-dom';
 import { startMicrosoftLogin } from './msalOauth';
 import Header from './components/Header';
@@ -81,7 +82,7 @@ function AdminRoute({ darkMode, setDarkMode }) {
       .finally(() => setChecking(false));
   }, [token]);
 
-  const handleLogout = () => { localStorage.removeItem('admin_token'); setToken(''); setVerified(false); };
+  const handleLogout = () => { reportLogout('admin'); localStorage.removeItem('admin_token'); setToken(''); setVerified(false); };
 
   if (checking) {
     return (

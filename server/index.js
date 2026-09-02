@@ -245,6 +245,12 @@ app.post('/api/auth/microsoft/exchange', async (req, res) => {
     const tokenRes = await httpsPost('login.microsoftonline.com', `/${tenantId}/oauth2/v2.0/token`, tokenBody);
 
     if (tokenRes.status !== 200 || !tokenRes.data.access_token) {
+      await audit(req, {
+        action: 'auth.microsoft_login_failed', category: 'auth', outcome: 'failure',
+        actorEmail: '', actorName: '', actorRole: '',
+        summary: `Microsoft sign-in failed — ${tokenRes.data.error_description || 'token exchange rejected'}`,
+        details: { stage: 'token_exchange' },
+      });
       return res.status(401).json({ error: tokenRes.data.error_description || 'Token exchange failed' });
     }
 
@@ -844,6 +850,12 @@ app.post('/api/categories', async (req, res) => {
       { group, name, slug },
       { upsert: true, new: true }
     );
+    await audit(req, {
+      action: 'content.category_saved', category: 'content',
+      targetType: 'category',
+      targetName: (req.body && req.body.name) || '',
+      summary: `Category "${(req.body && req.body.name) || ''}" saved`,
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -890,7 +902,7 @@ app.put('/api/product-config/reorder', async (req, res) => {
       ProductConfig.findByIdAndUpdate(id, { order: idx })
     );
     await Promise.all(ops);
-    audit(req, {
+    await audit(req, {
       action: 'content.reordered', category: 'content',
       targetType: 'productConfig', targetName: 'display order',
       summary: `Reordered ${(orderedIds || []).length} product types`,
@@ -927,7 +939,7 @@ app.put('/api/product-config/:id/reorder-combinations', async (req, res) => {
     if (!config) return res.status(404).json({ error: 'Not found' });
     config.combinations = combinations;
     await config.save();
-    audit(req, {
+    await audit(req, {
       action: 'content.combinations_reordered', category: 'content',
       targetType: 'productConfig', targetId: config._id, targetName: config.name,
       summary: `Reordered the combinations of ${config.name}`,
@@ -1039,6 +1051,13 @@ app.delete(['/api/product-types/combination', '/product-types/combination'], asy
       await DeletedCombination.insertMany(trashDocs);
     }
 
+    await audit(req, {
+      action: 'content.combination_deleted', category: 'content',
+      targetType: 'productConfig',
+      targetName: combination,
+      summary: `Combination "${combination}"${productType ? ' in ' + productType : ''} deleted — ${deletedFeatures} feature(s) moved to Trash`,
+      details: { combination, productType: productType || null, deletedFeatures },
+    });
     res.json({
       success: true,
       combination,
@@ -1087,6 +1106,13 @@ app.put(['/api/product-types/combination/rename', '/product-types/combination/re
       );
     }
 
+    await audit(req, {
+      action: 'content.combination_renamed', category: 'content',
+      targetType: 'productConfig',
+      targetName: newName,
+      summary: `Combination "${oldName}" renamed to "${newName}"` + (productType ? ` in ${productType}` : '') + `, ${configs.length} product type(s) affected`,
+      details: { from: oldName, to: newName, productType: productType || null, productTypesAffected: configs.length },
+    });
     res.json({ success: true, oldName, newName, productTypesAffected: configs.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1382,7 +1408,7 @@ app.put('/api/features/reorder', async (req, res) => {
       },
     }));
     await Feature.bulkWrite(ops);
-    audit(req, {
+    await audit(req, {
       action: 'content.reordered', category: 'content',
       targetType: 'feature', targetName: 'display order',
       summary: `Reordered ${(orderedIds || []).length} features`,
@@ -1606,7 +1632,7 @@ app.get('/api/internal/v1/word-doc', requireInternalKey, async (req, res) => {
     res.setHeader('Content-Length', built.buffer.length);
     res.setHeader('X-Doc-Filename', built.filename);
     res.setHeader('X-Doc-Stats', JSON.stringify(built.stats));
-    audit(req, {
+    await audit(req, {
       action: 'api.word_doc_downloaded', category: 'api',
       actorEmail: '', actorName: '', actorRole: 'internal-api',
       targetType: 'features', targetName: `${productType}${combination ? ' / ' + combination : ''} (${scope})`,
@@ -1727,6 +1753,25 @@ app.post('/api/audit/download', async (req, res) => {
       details: { format, productType, combination, scope, name },
     });
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Signing out happens in the browser (the token is simply discarded), so there is
+// no request to record unless the client says so. Called before the token is
+// cleared, which is what identifies who left.
+app.post('/api/audit/logout', async (req, res) => {
+  try {
+    const decoded = decodeToken(req);
+    if (!decoded) return res.json({ success: true, recorded: false });
+    await audit(req, {
+      action: 'auth.logout', category: 'auth',
+      actorEmail: decoded.email || '', actorName: decoded.name || '', actorRole: decoded.role || '',
+      summary: `${decoded.email || "someone"} signed out`,
+      details: { surface: (req.body && req.body.surface) || null },
+    });
+    res.json({ success: true, recorded: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1992,6 +2037,8 @@ app.get('/api/notifications', async (req, res) => {
           message = `${place}: new feature "${revision.entityName}" added`;
         } else if (revision.action === 'deleted') {
           message = `${place}: feature "${revision.entityName}" removed`;
+        } else if (revision.action === 'restored') {
+          message = `${place}: feature "${revision.entityName}" restored from Trash`;
         } else {
           message = `${place}: "${revision.entityName}"` + (fieldList.length ? ` — ${fieldList.join(', ')} updated` : ' updated');
         }
@@ -2370,7 +2417,7 @@ app.post('/api/screenshots', (req, res) => {
         const relativePath = path.relative(assetsDir, f.path).replace(/\\/g, '/');
         return `/assets/${relativePath}`;
       });
-      audit(req, {
+      audit(req, { // not awaited: this runs inside multer's synchronous callback
         action: 'upload.screenshots', category: 'content',
         targetType: 'screenshot', targetName: `${paths.length} file(s)`,
         summary: `Uploaded ${paths.length} screenshot(s)`,
@@ -2439,7 +2486,7 @@ app.put('/api/compatibility/reorder', async (req, res) => {
       updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
     }));
     await CompatibilityMatrix.bulkWrite(ops);
-    audit(req, {
+    await audit(req, {
       action: 'content.reordered', category: 'content',
       targetType: 'compatibility', targetName: 'display order',
       summary: `Reordered ${(orderedIds || []).length} compatibility matrices`,
@@ -2586,7 +2633,7 @@ app.put('/api/cloud-info-reorder', async (req, res) => {
       updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
     }));
     await CloudInfo.bulkWrite(ops);
-    audit(req, {
+    await audit(req, {
       action: 'content.reordered', category: 'content',
       targetType: 'cloudInfo', targetName: 'display order',
       summary: `Reordered ${(orderedIds || []).length} cloud info pages`,
@@ -2627,7 +2674,7 @@ app.put('/api/documents/reorder', async (req, res) => {
       updateOne: { filter: { _id: id }, update: { $set: { order: idx } } }
     }));
     await DocModel.bulkWrite(ops);
-    audit(req, {
+    await audit(req, {
       action: 'content.reordered', category: 'content',
       targetType: 'document', targetName: 'display order',
       summary: `Reordered ${(orderedIds || []).length} documents`,
@@ -2699,7 +2746,7 @@ app.post('/api/documents/upload', docUpload.single('file'), async (req, res) => 
 
     const count = await DocModel.countDocuments();
     const item = await DocModel.create({ name, slug, content, fileUrl, fileType, order: count });
-    audit(req, {
+    await audit(req, {
       action: 'upload.document_file', category: 'content',
       targetType: 'document', targetName: (req.file && req.file.originalname) || '',
       summary: `Uploaded document file ${(req.file && req.file.originalname) || ''}`,
@@ -2800,9 +2847,11 @@ app.put('/api/trash/restore/:type/:id', async (req, res) => {
       comboTrash.deletedAt = null;
       await comboTrash.save();
       await audit(req, {
-        action: 'content.restored_from_trash', category: 'content',
-        targetType: String(req.params.type), targetId: req.params.id,
-        summary: `Restored ${req.params.type} from Trash`,
+        action: 'content.combination_restored', category: 'content',
+        targetType: 'productConfig', targetId: comboTrash.productConfigId,
+        targetName: comboTrash.combination,
+        summary: `Combination "${comboTrash.combination}" restored from Trash in ${comboTrash.productType}` + ` — ${(comboTrash.featureIds || []).length} feature(s) brought back`,
+        details: { combination: comboTrash.combination, productType: comboTrash.productType, features: (comboTrash.featureIds || []).length },
       });
       return res.json({ success: true });
     }
@@ -2817,6 +2866,10 @@ app.put('/api/trash/restore/:type/:id', async (req, res) => {
 
     const doc = await Model.findByIdAndUpdate(id, { isDeleted: false, deletedAt: null }, { new: true });
     if (!doc) return res.status(404).json({ error: 'Not found' });
+
+    // A restore is a content change: it belongs in the revision log so the row
+    // reappears in version history and the people watching that page are told.
+    await recordLifecycle(type, doc.toObject ? doc.toObject() : doc, 'restored', req);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

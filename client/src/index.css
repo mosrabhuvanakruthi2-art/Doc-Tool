@@ -5567,3 +5567,562 @@ a:hover { text-decoration: underline; }
   margin-bottom: 4px;
   border-bottom: 1px solid var(--border-color);
 }
+
+/* ============ Documents folder tree (admin) ============ */
+
+.doc-tree-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn-create-folder {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+.btn-create-folder:hover {
+  background: var(--text-primary);
+  color: var(--bg-secondary);
+  border-color: var(--text-primary);
+}
+
+.btn-tree-action {
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-family);
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.btn-tree-action:hover {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.doc-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.doc-tree-node {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.doc-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.doc-tree-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.doc-tree-row:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.doc-tree-folder {
+  background: var(--bg-primary);
+}
+
+.doc-tree-newfolder {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.doc-tree-label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 1;
+  font-size: 14px;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.doc-tree-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-family);
+}
+
+.doc-tree-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.doc-tree-icon-folder {
+  color: var(--accent);
+}
+
+.doc-tree-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.18s ease;
+}
+
+.doc-tree-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.doc-tree-name {
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.doc-tree-folder .doc-tree-name {
+  font-weight: 600;
+}
+
+.doc-tree-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.doc-tree-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.doc-tree-actions .delete-confirm-bar {
+  margin-top: 0;
+  padding: 4px 10px;
+}
+
+.doc-tree-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0 8px;
+}
+
+.doc-tree-rename-input {
+  padding: 5px 9px;
+  font-size: 13px;
+  font-family: var(--font-family);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  min-width: 180px;
+}
+
+@media (max-width: 768px) {
+  .doc-tree-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .doc-tree-actions {
+    justify-content: flex-start;
+  }
+
+  }
+
+/* Documents folder tree in the sidebar */
+.sidebar-doc-folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.sidebar-doc-folder-chevron {
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: transform 0.18s ease;
+}
+
+.sidebar-doc-folder-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.sidebar-doc-folder-name {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.sidebar-doc-subtree {
+  margin-left: 0;
+}
+
+.sidebar-docs-empty {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  list-style: none;
+}
+
+/* A folder the reader has not been granted: listed, but not openable */
+.sidebar-doc-lock {
+  display: inline-flex;
+  flex-shrink: 0;
+  opacity: 0.55;
+}
+
+.sidebar-doc-locked {
+  opacity: 0.75;
+}
+
+.sidebar-doc-locked:hover {
+  opacity: 1;
+}
+
+.folder-grant-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.folder-grant-hint,
+.folder-grant-empty {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.user-folders-cell {
+  max-width: 280px;
+}
+
+.user-folders-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Email search above the access requests and users tables */
+.user-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  max-width: 360px;
+}
+
+.user-search-bar svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.user-search-bar input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+  font-family: var(--font-family);
+  color: var(--text-primary);
+}
+
+.user-search-clear {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.user-search-clear:hover {
+  color: var(--text-primary);
+}
+
+/* --- Drag and drop in the documents tree --- */
+.doc-tree-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.doc-tree-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.doc-tree-grip {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+}
+
+.doc-tree-row[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.doc-tree-dragging {
+  opacity: 0.45;
+}
+
+/* Where the dragged row would land */
+.doc-drop-before {
+  box-shadow: inset 0 3px 0 0 var(--accent);
+}
+
+.doc-drop-after {
+  box-shadow: inset 0 -3px 0 0 var(--accent);
+}
+
+.doc-drop-inside {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.doc-tree-rootdrop {
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius);
+}
+
+.doc-tree-rootdrop.active {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.doc-tree .delete-confirm-bar {
+  margin-top: 0;
+}
+
+/* Chromium will not start a drag from inside a button or input, so the row is
+   marked draggable explicitly and its controls opt out. */
+.doc-tree-row {
+  -webkit-user-drag: element;
+}
+
+.doc-tree-actions button,
+.doc-tree-rename-input {
+  -webkit-user-drag: none;
+}
+
+.doc-tree-toggle {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-family);
+}
+
+.sidebar-folder-empty {
+  padding: 7px 14px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-muted);
+  list-style: none;
+}
+
+/* --- Per-document access: request screen --- */
+.doc-access-card-wide {
+  max-width: 560px;
+  text-align: left;
+}
+
+.doc-access-card-wide .doc-access-icon,
+.doc-access-card-wide .doc-access-title {
+  text-align: left;
+}
+
+.doc-access-pick-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 18px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.doc-access-selectall {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-family);
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.doc-access-pick-list {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+}
+
+.doc-access-pick-list li {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.doc-access-pick-list li:last-child {
+  border-bottom: none;
+}
+
+.doc-access-pick-list label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.doc-access-pick-list li.is-pending label {
+  cursor: default;
+  color: var(--text-muted);
+}
+
+.doc-access-pick-name {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.doc-access-pick-tag {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.doc-access-pick-tag.denied {
+  background: #fbe9e7;
+  color: #c62828;
+}
+
+.doc-access-sent-list {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* --- Locked documents in the sidebar --- */
+.sidebar-doc-leaf {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-doc-leaf-name {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* --- Admin: grant editor and request batches --- */
+.doc-grant-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+.doc-grant-group {
+  margin-bottom: 10px;
+}
+
+.doc-grant-folder {
+  font-weight: 600;
+}
+
+.doc-grant-folder em {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.doc-grant-loose {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.doc-grant-doc {
+  padding-left: 20px;
+}
+
+.access-batch-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.access-batch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--accent-light);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+.access-batch-label {
+  flex: 1;
+  min-width: 180px;
+  color: var(--text-primary);
+}
+
+.access-req-where {
+  color: var(--text-muted);
+  font-size: 12px;
+}

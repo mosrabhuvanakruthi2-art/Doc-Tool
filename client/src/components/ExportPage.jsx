@@ -7,14 +7,34 @@ import { useProductConfig } from '../ProductConfigContext';
 import { showToast } from './Toast';
 import CustomSelect from './CustomSelect';
 
-function getExportFilename(productType, combination, ext) {
+function getDateStr() {
   const now = new Date();
   const dd = String(now.getDate()).padStart(2, '0');
   const mm = String(now.getMonth() + 1).padStart(2, '0');
   const yyyy = now.getFullYear();
-  const date = `${dd}-${mm}-${yyyy}`;
-  const combo = combination ? '_' + combination.replace(/\s+/g, '') : '';
-  return `${productType}${combo}_(${date}).${ext}`;
+  return `${dd}-${mm}-${yyyy}`;
+}
+
+// Windows refuses \ / : * ? " < > | in a filename, and spaces glued together
+// turned "Outlook to Gmail" into "OutlooktoGmail", so each part is cleaned and
+// hyphenated instead.
+function safeFilePart(text) {
+  return String(text || '')
+    .replace(/[\\/:*?"<>|]+/g, '')
+    .trim()
+    .replace(/\s+/g, '-');
+}
+
+const SCOPE_FILE_LABEL = { inscope: 'In-Scope', outscope: 'Out-of-Scope' };
+
+// Product, combination, date, then the scope last, so In Scope and Out of Scope
+// downloads of the same page land as two files instead of "... (1)".
+function getExportFilename(productType, combination, ext, scope) {
+  const parts = [safeFilePart(productType)];
+  if (combination) parts.push(safeFilePart(combination));
+  parts.push(`(${getDateStr()})`);
+  if (SCOPE_FILE_LABEL[scope]) parts.push(SCOPE_FILE_LABEL[scope]);
+  return `${parts.filter(Boolean).join('_')}.${ext}`;
 }
 
 function groupByFamily(features) {
@@ -117,7 +137,7 @@ function ExportPage({ onBack }) {
       const element = printRef.current;
       if (!element) { showToast('Could not generate PDF.', 'error'); setDownloading(''); return; }
 
-      const filename = getExportFilename(productType, combination, 'pdf');
+      const filename = getExportFilename(productType, combination, 'pdf', scope);
       await html2pdf().set({
         margin: [10, 10, 10, 10],
         filename,
@@ -147,7 +167,7 @@ function ExportPage({ onBack }) {
       const children = buildDocxChildren(productType, combination, scopeLabel, features);
       const docFile = new Document({ sections: [{ children }] });
       const blob = await Packer.toBlob(docFile);
-      saveAs(blob, getExportFilename(productType, combination, 'docx'));
+      saveAs(blob, getExportFilename(productType, combination, 'docx', scope));
       reportDownload('export', 'docx', { productType, combination, name: combination || productType });
 
       showToast('DOCX downloaded!');

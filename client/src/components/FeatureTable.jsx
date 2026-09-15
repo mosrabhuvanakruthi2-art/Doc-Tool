@@ -125,9 +125,26 @@ function getDateStr() {
   return `${dd}-${mm}-${yyyy}`;
 }
 
-function getExportFilename(productType, combination, ext) {
-  const combo = combination ? '_' + combination.replace(/\s+/g, '') : '';
-  return `${productType}${combo}_(${getDateStr()}).${ext}`;
+// Windows refuses \ / : * ? " < > | in a filename, and spaces glued together
+// turned "Outlook to Gmail" into "OutlooktoGmail", so each part is cleaned and
+// hyphenated instead.
+function safeFilePart(text) {
+  return String(text || '')
+    .replace(/[\\/:*?"<>|]+/g, '')
+    .trim()
+    .replace(/\s+/g, '-');
+}
+
+const SCOPE_FILE_LABEL = { inscope: 'In-Scope', outscope: 'Out-of-Scope' };
+
+// Product, combination, date, then the scope last, so In Scope and Out of Scope
+// downloads of the same page land as two files instead of "... (1)".
+function getExportFilename(productType, combination, ext, scope) {
+  const parts = [safeFilePart(productType)];
+  if (combination) parts.push(safeFilePart(combination));
+  parts.push(`(${getDateStr()})`);
+  if (SCOPE_FILE_LABEL[scope]) parts.push(SCOPE_FILE_LABEL[scope]);
+  return `${parts.filter(Boolean).join('_')}.${ext}`;
 }
 
 function groupByFamily(features) {
@@ -346,7 +363,7 @@ function FeatureTable() {
 
       const doc = new Document({ sections: [{ children }] });
       const blob = await Packer.toBlob(doc);
-      saveAs(blob, getExportFilename(productType, combination, 'docx'));
+      saveAs(blob, getExportFilename(productType, combination, 'docx', section));
       reportDownload('features', 'docx', { productType, combination, scope: section, name: combination || productType });
     } catch (err) {
       console.error('DOCX download error:', err);

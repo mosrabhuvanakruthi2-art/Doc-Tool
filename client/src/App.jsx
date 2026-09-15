@@ -12,7 +12,6 @@ import AdminPage from './components/AdminPage';
 import AdminLogin from './components/AdminLogin';
 import ToastContainer from './components/Toast';
 import CfLoader from './components/CfLoader';
-import DocumentAccessRequest from './components/DocumentAccessRequest';
 import { useAuth } from './AuthContext';
 
 const AZURE_CLIENT_ID = import.meta.env.VITE_AZURE_CLIENT_ID || '';
@@ -105,7 +104,7 @@ function AdminRoute({ darkMode, setDarkMode }) {
 
 function MainContent() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { hasPermission } = useAuth();
+
   const view = searchParams.get('view') || '';
   const matrixSlug = searchParams.get('matrix') || '';
   const infoSlug = searchParams.get('info') || '';
@@ -121,10 +120,7 @@ function MainContent() {
 
   if (view === 'compatibility' && matrixSlug) return <CompatibilityTable matrixSlug={matrixSlug} />;
   if (view === 'cloudinfo' && infoSlug) return <CloudInfoPage slug={infoSlug} />;
-  if (view === 'documents') {
-    if (!hasPermission('documents')) return <DocumentAccessRequest />;
-    if (docSlug) return <DocumentPage slug={docSlug} />;
-  }
+  if (view === 'documents' && docSlug) return <DocumentPage slug={docSlug} />;
   return <FeatureTable />;
 }
 

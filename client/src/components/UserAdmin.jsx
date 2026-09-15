@@ -14,7 +14,11 @@ function UserAdmin() {
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState('list');
   const [editingUser, setEditingUser] = useState(null);
-  const [form, setForm] = useState({ email: '', password: '', name: '', role: 'viewer', permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true } });
+  const [form, setForm] = useState({ email: '', password: '', name: '', role: 'viewer', permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true }, documentFolders: [], documentAccess: [] });
+  const [folders, setFolders] = useState([]);
+  const [documents, setDocuments] = useState([]);
+  const [search, setSearch] = useState('');
+  const [bulkBusy, setBulkBusy] = useState('');
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [accessRequests, setAccessRequests] = useState([]);
@@ -58,6 +62,30 @@ function UserAdmin() {
     setRespondingId(null);
   };
 
+  // Runs the existing single-request endpoints one at a time: the same audit
+  // entry, email and grant per document as deciding them by hand.
+  const decideBatch = async (group, decision) => {
+    setBulkBusy(group.email);
+    let ok = 0;
+    for (const row of group.rows) {
+      try {
+        const res = await fetch(`/api/access-requests/${row._id}/${decision}`, { method: 'PUT', headers });
+        const data = await res.json();
+        if (res.ok && data.success) ok += 1;
+      } catch (_) { /* counted as failed below */ }
+    }
+    setBulkBusy('');
+    const failed = group.rows.length - ok;
+    showToast(
+      failed
+        ? `${ok} of ${group.rows.length} ${decision === 'approve' ? 'approved' : 'denied'} — ${failed} failed`
+        : `${ok} request${ok > 1 ? 's' : ''} ${decision === 'approve' ? 'approved' : 'denied'}`,
+      failed ? 'error' : 'success',
+    );
+    fetchAccessRequests();
+    fetchUsers();
+  };
+
   const handleRevoke = async (id) => {
     setRespondingId(id);
     try {
@@ -74,6 +102,14 @@ function UserAdmin() {
   const fetchUsers = async () => {
     setLoading(true);
     try {
+      fetch('/api/document-folders', { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.json())
+        .then(d => setFolders(d.folders || []))
+        .catch(() => {});
+      fetch('/api/documents', { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.json())
+        .then(d => setDocuments(d.items || []))
+        .catch(() => {});
       const res = await fetch('/api/users', { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       setUsers(data.users || []);
@@ -84,9 +120,59 @@ function UserAdmin() {
   useEffect(() => { fetchUsers(); fetchAccessRequests(); }, []);
 
   const resetForm = () => {
-    setForm({ email: '', password: '', name: '', role: 'viewer', permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true } });
+    setForm({ email: '', password: '', name: '', role: 'viewer', permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true }, documentFolders: [], documentAccess: [] });
     setEditingUser(null);
     setMode('list');
+  };
+
+  // Folder paths read "Guides / Migration", so a subfolder grant is legible
+  // without having to picture the tree.
+  const folderPath = (folder) => {
+    const byId = new Map(folders.map(f => [f.id, f]));
+    const parts = [];
+    let cursor = folder;
+    const guard = new Set();
+    while (cursor && !guard.has(cursor.id)) {
+      guard.add(cursor.id);
+      parts.unshift(cursor.name);
+      cursor = cursor.parentId ? byId.get(cursor.parentId) : null;
+    }
+    return parts.join(' / ');
+  };
+
+  const folderToggle = (id) => {
+    setForm(prev => ({
+      ...prev,
+      documentFolders: prev.documentFolders.includes(id)
+        ? prev.documentFolders.filter(f => f !== id)
+        : [...prev.documentFolders, id],
+    }));
+  };
+
+  const docToggle = (id) => {
+    setForm(prev => ({
+      ...prev,
+      documentAccess: prev.documentAccess.includes(id)
+        ? prev.documentAccess.filter(d => d !== id)
+        : [...prev.documentAccess, id],
+    }));
+  };
+
+  // Documents grouped by the folder they live in, so the grant list reads the
+  // way the sidebar does.
+  const docsByFolder = (folderId) => documents.filter(d => String(d.folderId || '') === String(folderId || ''));
+
+  // A whole-folder grant already covers everything inside it, so the individual
+  // boxes below it are shown as covered rather than pretending to be separate.
+  const coveredByFolder = (doc) => {
+    let cursor = folders.find(f => f.id === String(doc.folderId || ''));
+    const guard = new Set();
+    while (cursor && !guard.has(cursor.id)) {
+      if (form.documentFolders.includes(cursor.id)) return true;
+      guard.add(cursor.id);
+      cursor = cursor.parentId ? folders.find(f => f.id === cursor.parentId) : null;
+    }
+    return false;
   };
 
   const handleEdit = (user) => {
@@ -97,6 +183,8 @@ function UserAdmin() {
       name: user.name || '',
       role: user.role,
       permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true, ...user.permissions },
+      documentFolders: (user.documentFolders || []).map(String),
+      documentAccess: (user.documentAccess || []).map(String),
     });
     setMode('edit');
   };
@@ -106,7 +194,13 @@ function UserAdmin() {
     if (mode === 'create' && !form.password) { showToast('Password is required', 'error'); return; }
     setSaving(true);
     try {
-      const body = { name: form.name.trim(), role: form.role, permissions: form.permissions };
+      const body = {
+        name: form.name.trim(),
+        role: form.role,
+        permissions: form.permissions,
+        documentFolders: form.documentFolders,
+        documentAccess: form.documentAccess,
+      };
       if (mode === 'create') {
         body.email = form.email.trim();
         body.password = form.password;
@@ -161,13 +255,28 @@ function UserAdmin() {
   };
 
   if (mode === 'list') {
-    const pendingRequests = accessRequests.filter(r => r.status === 'pending');
+    const query = search.trim().toLowerCase();
+    const byEmail = (row) => !query || String(row.email || '').toLowerCase().includes(query);
 
-    const reqTotalPages = Math.max(1, Math.ceil(accessRequests.length / PAGE_SIZE));
-    const pagedRequests = accessRequests.slice((reqPage - 1) * PAGE_SIZE, reqPage * PAGE_SIZE);
+    const shownRequests = accessRequests.filter(byEmail);
+    // Pending requests grouped per person, for the batch buttons.
+    const pendingByEmail = Object.values(
+      shownRequests.filter(r => r.status === 'pending').reduce((acc, r) => {
+        acc[r.email] = acc[r.email] || { email: r.email, rows: [] };
+        acc[r.email].rows.push(r);
+        return acc;
+      }, {})
+    ).filter(g => g.rows.length > 1);
+    const shownUsers = users.filter(byEmail);
+    const pendingRequests = shownRequests.filter(r => r.status === 'pending');
 
-    const usersTotalPages = Math.max(1, Math.ceil(users.length / PAGE_SIZE));
-    const pagedUsers = users.slice((usersPage - 1) * PAGE_SIZE, usersPage * PAGE_SIZE);
+    const reqTotalPages = Math.max(1, Math.ceil(shownRequests.length / PAGE_SIZE));
+    const reqPageSafe = Math.min(reqPage, reqTotalPages);
+    const pagedRequests = shownRequests.slice((reqPageSafe - 1) * PAGE_SIZE, reqPageSafe * PAGE_SIZE);
+
+    const usersTotalPages = Math.max(1, Math.ceil(shownUsers.length / PAGE_SIZE));
+    const usersPageSafe = Math.min(usersPage, usersTotalPages);
+    const pagedUsers = shownUsers.slice((usersPageSafe - 1) * PAGE_SIZE, usersPageSafe * PAGE_SIZE);
 
     const Pagination = ({ page, totalPages, onPage }) => {
       if (totalPages <= 1) return null;
@@ -186,23 +295,67 @@ function UserAdmin() {
 
     return (
       <div className="user-admin">
+        <div className="user-search-bar">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setReqPage(1); setUsersPage(1); }}
+            placeholder="Search by email…"
+          />
+          {search && (
+            <button className="user-search-clear" onClick={() => { setSearch(''); setReqPage(1); setUsersPage(1); }} title="Clear">×</button>
+          )}
+        </div>
+
         {/* Access Requests Section */}
-        {accessRequests.length > 0 && (
+        {shownRequests.length > 0 && (
           <div className="access-requests-section">
             <div className="access-requests-header">
               <h3>
-                Documents Access Requests
+                Document Access Requests
                 {pendingRequests.length > 0 && (
                   <span className="access-request-badge">{pendingRequests.length}</span>
                 )}
               </h3>
             </div>
+
+            {/* Somebody who asks for eight documents at once should not cost
+                eight clicks, so each person's pending batch can be decided in one. */}
+            {pendingByEmail.length > 0 && (
+              <div className="access-batch-bar">
+                {pendingByEmail.map(group => (
+                  <div key={group.email} className="access-batch-row">
+                    <span className="access-batch-label">
+                      <strong>{group.email}</strong> — {group.rows.length} pending
+                    </span>
+                    <button
+                      className="btn-approve"
+                      disabled={bulkBusy === group.email}
+                      onClick={() => decideBatch(group, 'approve')}
+                    >
+                      {bulkBusy === group.email ? 'Working…' : `Approve all ${group.rows.length}`}
+                    </button>
+                    <button
+                      className="btn-deny"
+                      disabled={bulkBusy === group.email}
+                      onClick={() => decideBatch(group, 'deny')}
+                    >
+                      Deny all
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="access-requests-table-wrap">
               <table className="user-admin-table">
                 <thead>
                   <tr>
                     <th>Email</th>
-                    <th>Name</th>
+                    <th>Requested</th>
                     <th>Requested At</th>
                     <th>Status</th>
                     <th>Actions</th>
@@ -212,7 +365,11 @@ function UserAdmin() {
                   {pagedRequests.map(r => (
                     <tr key={r._id}>
                       <td>{r.email}</td>
-                      <td>{r.name || '—'}</td>
+                      <td>
+                        {r.documentName
+                          ? <>{r.documentName}{r.folderName ? <span className="access-req-where"> in {r.folderName}</span> : null}</>
+                          : (r.folderName ? `${r.folderName} (whole folder)` : 'Documents (whole section)')}
+                      </td>
                       <td>{new Date(r.requestedAt).toLocaleString()}</td>
                       <td>
                         <span className={`access-status-badge status-${r.status}`}>
@@ -261,7 +418,7 @@ function UserAdmin() {
                 </tbody>
               </table>
             </div>
-            <Pagination page={reqPage} totalPages={reqTotalPages} onPage={p => setReqPage(Math.max(1, Math.min(p, reqTotalPages)))} />
+            <Pagination page={reqPageSafe} totalPages={reqTotalPages} onPage={p => setReqPage(Math.max(1, Math.min(p, reqTotalPages)))} />
           </div>
         )}
 
@@ -270,17 +427,18 @@ function UserAdmin() {
           <h3>User Management</h3>
           <button className="btn-save" onClick={() => { resetForm(); setMode('create'); }}>+ New User</button>
         </div>
-        {loading ? <p>Loading users...</p> : users.length === 0 ? (
-          <p className="user-admin-empty">No users yet. Click "+ New User" to create one.</p>
+        {loading ? <p>Loading users...</p> : shownUsers.length === 0 ? (
+          <p className="user-admin-empty">
+            {query ? `No users match "${search.trim()}".` : 'No users yet. Click "+ New User" to create one.'}
+          </p>
         ) : (
           <div className="user-admin-table-wrap">
             <table className="user-admin-table">
               <thead>
                 <tr>
                   <th>Email</th>
-                  <th>Name</th>
                   <th>Role</th>
-                  <th>Permissions</th>
+                  <th>Document Access</th>
                   <th>Status</th>
                   <th>Actions</th>
                 </tr>
@@ -289,14 +447,37 @@ function UserAdmin() {
                 {pagedUsers.map(u => (
                   <tr key={u.id || u._id} className={!u.isActive ? 'user-row-inactive' : ''}>
                     <td>{u.email}</td>
-                    <td>{u.name || '—'}</td>
                     <td><span className={`role-badge role-${u.role}`}>{u.role}</span></td>
-                    <td className="user-perms-cell">
-                      {PERM_KEYS.map(p => (
-                        <span key={p.key} className={`perm-chip ${u.permissions?.[p.key] !== false ? 'perm-on' : 'perm-off'}`}>
-                          {p.label}
-                        </span>
-                      ))}
+                    <td className="user-folders-cell">
+                      {/* The chips wrap in an inner box: a <td> made a flex
+                          container stops behaving like a table cell, which threw
+                          every column after it out of line. */}
+                      <div className="user-folders-chips">
+                        {u.role === 'admin' ? (
+                          <span className="perm-chip perm-on">Everything</span>
+                        ) : (u.documentFolders || []).length === 0 && (u.documentAccess || []).length === 0 ? (
+                          <span className="perm-chip perm-off">None</span>
+                        ) : (
+                          <>
+                            {(u.documentFolders || []).map(id => {
+                              const f = folders.find(x => x.id === String(id));
+                              return (
+                                <span key={'f' + String(id)} className="perm-chip perm-on">
+                                  {f ? folderPath(f) : 'removed folder'} (folder)
+                                </span>
+                              );
+                            })}
+                            {(u.documentAccess || []).map(id => {
+                              const d = documents.find(x => x._id === String(id));
+                              return (
+                                <span key={'d' + String(id)} className="perm-chip perm-on">
+                                  {d ? d.name : 'removed document'}
+                                </span>
+                              );
+                            })}
+                          </>
+                        )}
+                      </div>
                     </td>
                     <td>
                       <button className={`btn-status ${u.isActive ? 'active' : 'inactive'}`} onClick={() => handleToggleActive(u)}>
@@ -318,7 +499,7 @@ function UserAdmin() {
                 ))}
               </tbody>
             </table>
-            <Pagination page={usersPage} totalPages={usersTotalPages} onPage={p => setUsersPage(Math.max(1, Math.min(p, usersTotalPages)))} />
+            <Pagination page={usersPageSafe} totalPages={usersTotalPages} onPage={p => setUsersPage(Math.max(1, Math.min(p, usersTotalPages)))} />
           </div>
         )}
       </div>
@@ -363,6 +544,63 @@ function UserAdmin() {
             ))}
           </div>
         </div>
+        {form.role !== 'admin' && (
+          <div className="form-group">
+            <label>Document Access</label>
+            {folders.length === 0 && documents.length === 0 ? (
+              <p className="folder-grant-empty">No documents yet.</p>
+            ) : (
+              <>
+                <div className="doc-grant-list">
+                  {folders.map(f => (
+                    <div key={f.id} className="doc-grant-group">
+                      <label className="perm-toggle-label doc-grant-folder">
+                        <input
+                          type="checkbox"
+                          checked={form.documentFolders.includes(f.id)}
+                          onChange={() => folderToggle(f.id)}
+                        />
+                        <span>{folderPath(f)} <em>— whole folder</em></span>
+                      </label>
+                      {docsByFolder(f.id).map(d => {
+                        const covered = coveredByFolder(d);
+                        return (
+                          <label key={d._id} className="perm-toggle-label doc-grant-doc">
+                            <input
+                              type="checkbox"
+                              checked={covered || form.documentAccess.includes(d._id)}
+                              disabled={covered}
+                              onChange={() => docToggle(d._id)}
+                            />
+                            <span>{d.name}{covered ? ' (covered by the folder grant)' : ''}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ))}
+                  {docsByFolder('').length > 0 && (
+                    <div className="doc-grant-group">
+                      <span className="doc-grant-folder doc-grant-loose">Not in any folder</span>
+                      {docsByFolder('').map(d => (
+                        <label key={d._id} className="perm-toggle-label doc-grant-doc">
+                          <input
+                            type="checkbox"
+                            checked={form.documentAccess.includes(d._id)}
+                            onChange={() => docToggle(d._id)}
+                          />
+                          <span>{d.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <small className="folder-grant-hint">
+                  Tick a document to grant just that one, or a folder to cover everything inside it, including documents added later. Admins always see everything.
+                </small>
+              </>
+            )}
+          </div>
+        )}
         <div className="form-actions">
           <button className="btn-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
           <button className="btn-cancel" onClick={resetForm}>Cancel</button>

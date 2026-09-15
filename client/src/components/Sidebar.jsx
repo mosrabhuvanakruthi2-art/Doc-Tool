@@ -40,6 +40,19 @@ const COMPAT_ICON = (
   </svg>
 );
 
+const LOCK_ICON = (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </svg>
+);
+
+const FOLDER_ICON = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+  </svg>
+);
+
 const DOC_ICON = (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -79,10 +92,28 @@ function Sidebar() {
   const [compatMatrices, setCompatMatrices] = useState([]);
   const [cloudInfoItems, setCloudInfoItems] = useState([]);
   const [docItems, setDocItems] = useState([]);
+  const [docFolders, setDocFolders] = useState([]);
+  const [openDocFolders, setOpenDocFolders] = useState({});
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [isDragging, setIsDragging] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const sidebarRef = useRef(null);
+
+  // Folders and documents are edited in the admin panel, often in another tab,
+  // so the tree is reloaded on mount, on focus, and whenever the reader moves to
+  // another page - a menu that quietly lags a rename is worse than an extra GET.
+  const loadDocs = useCallback(() => {
+    fetch('/api/documents')
+      .then((res) => res.json())
+      .then((data) => setDocItems(data.items || []))
+      .catch(() => {});
+    fetch('/api/document-folders')
+      .then((res) => res.json())
+      .then((data) => setDocFolders(data.folders || []))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => { loadDocs(); }, [loadDocs, activeView, searchParams]);
 
   useEffect(() => {
     const loadCompat = () => {
@@ -97,15 +128,8 @@ function Sidebar() {
         .then((data) => setCloudInfoItems(data.items || []))
         .catch(() => {});
     };
-    const loadDocs = () => {
-      fetch('/api/documents')
-        .then((res) => res.json())
-        .then((data) => setDocItems(data.items || []))
-        .catch(() => {});
-    };
     loadCompat();
     loadCloud();
-    loadDocs();
     const onCompatChanged = () => loadCompat();
     window.addEventListener(COMPAT_MATRICES_CHANGED, onCompatChanged);
     const onFocus = () => {
@@ -113,6 +137,7 @@ function Sidebar() {
       loadCloud();
       loadDocs();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     window.addEventListener('focus', onFocus);
     return () => {
       window.removeEventListener(COMPAT_MATRICES_CHANGED, onCompatChanged);
@@ -237,6 +262,131 @@ function Sidebar() {
     params.set('doc', slug);
     setSearchParams(params);
   };
+
+  const toggleDocFolder = (id) => setOpenDocFolders((prev) => ({ ...prev, [id]: !prev[id] }));
+
+  // Folders are structure, not permission: everyone can open one and read the
+  // names inside. The lock sits on the individual documents.
+
+  // Landing on a document by URL should reveal it: open every folder above it,
+  // leaving whatever the reader opened by hand untouched.
+  const openDocSlug = searchParams.get('doc') || '';
+  useEffect(() => {
+    if (activeView !== 'documents' || !openDocSlug) return;
+    const doc = docItems.find((d) => d.slug === openDocSlug);
+    if (!doc || !doc.folderId) return;
+    const ancestors = {};
+    let cursor = docFolders.find((f) => f.id === String(doc.folderId));
+    while (cursor && !ancestors[cursor.id]) {
+      ancestors[cursor.id] = true;
+      cursor = cursor.parentId ? docFolders.find((f) => f.id === cursor.parentId) : null;
+    }
+    setOpenDocFolders((prev) => ({ ...prev, ...ancestors }));
+  }, [activeView, openDocSlug, docItems, docFolders]);
+
+  // The Documents menu mirrors the folder tree built in the admin panel.
+  // Top-level folders read like product types; everything nested inside reads
+  // like the combinations under one. Folders only open and close - a document
+  // is what actually navigates.
+  const docFoldersIn = (parentId) => docFolders.filter((f) => (f.parentId || '') === (parentId || ''));
+  const docsIn = (parentId) => docItems.filter((d) => (d.folderId || '') === (parentId || ''));
+
+  const renderDocFolder = (folder, depth) => {
+    const open = !!openDocFolders[folder.id];
+    const childCount = docFoldersIn(folder.id).length + docsIn(folder.id).length;
+    const top = depth === 0;
+    return (
+      <li key={folder.id}>
+        <button
+          className={top
+            ? `sidebar-product-btn ${open ? 'active' : ''}`
+            : `sidebar-combo-btn sidebar-doc-folder ${open ? 'open' : ''}`}
+          style={top ? undefined : { paddingLeft: 14 + (depth - 1) * 14 }}
+          onClick={() => toggleDocFolder(folder.id)}
+          title={folder.name}
+        >
+          {top ? (
+            <>
+              <span className="sidebar-product-icon-label">
+                {FOLDER_ICON}
+                <span>{folder.name}</span>
+              </span>
+              <svg
+                className={`sidebar-product-icon ${open ? 'expanded' : ''}`}
+                width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </>
+          ) : (
+            <>
+              <svg
+                className={`sidebar-doc-folder-chevron ${open ? 'expanded' : ''}`}
+                width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+              <span className="sidebar-doc-folder-name">{folder.name}</span>
+            </>
+          )}
+        </button>
+        {open && (
+          <ul className="sidebar-combos">
+            {childCount > 0
+              ? renderDocBranch(folder.id, depth + 1)
+              : <li className="sidebar-folder-empty" style={{ paddingLeft: 14 + depth * 14 }}>No documents</li>}
+          </ul>
+        )}
+      </li>
+    );
+  };
+
+  // A document the reader has not been granted is still listed by name - that is
+  // how they know to ask for it - and carries a lock; clicking it opens the
+  // request instead of the document.
+  const renderDocLeaf = (item, depth) => {
+    const active = activeView === 'documents' && searchParams.get('doc') === item.slug;
+    const locked = !!item.locked;
+    const title = locked ? `${item.name} — access required` : item.name;
+    if (depth === 0) {
+      return (
+        <li key={item._id}>
+          <button
+            className={`sidebar-product-btn ${active ? 'active' : ''} ${locked ? 'sidebar-doc-locked' : ''}`}
+            onClick={() => handleDocClick(item.slug)}
+            title={title}
+          >
+            <span className="sidebar-product-icon-label">
+              {DOC_ICON}
+              <span>{item.name}</span>
+            </span>
+            {locked && <span className="sidebar-doc-lock">{LOCK_ICON}</span>}
+          </button>
+        </li>
+      );
+    }
+    return (
+      <li key={item._id}>
+        <button
+          className={`sidebar-combo-btn sidebar-doc-leaf ${active ? 'active' : ''} ${locked ? 'sidebar-doc-locked' : ''}`}
+          style={{ paddingLeft: 14 + (depth - 1) * 14 }}
+          onClick={() => handleDocClick(item.slug)}
+          title={title}
+        >
+          <span className="sidebar-doc-leaf-name">{item.name}</span>
+          {locked && <span className="sidebar-doc-lock">{LOCK_ICON}</span>}
+        </button>
+      </li>
+    );
+  };
+
+  const renderDocBranch = (parentId, depth) => (
+    <>
+      {docFoldersIn(parentId).map((folder) => renderDocFolder(folder, depth))}
+      {docsIn(parentId).map((item) => renderDocLeaf(item, depth))}
+    </>
+  );
 
   const handleCloudInfoClick = (slug) => {
     const params = new URLSearchParams();
@@ -457,51 +607,14 @@ function Sidebar() {
                 <span className="sidebar-nav-label">Documents</span>
               </div>
               <ul className="sidebar-items">
-                <li>
-                  <button
-                    className={`sidebar-product-btn ${docsExpanded || activeView === 'documents' ? 'active' : ''}`}
-                    onClick={() => {
-                      if (!hasPermission('documents')) {
-                        setExpandedProduct('');
-                        setCompatExpanded(false);
-                        setCloudInfoExpanded(false);
-                        setDocsExpanded(false);
-                        const params = new URLSearchParams();
-                        params.set('view', 'documents');
-                        setSearchParams(params);
-                        return;
-                      }
-                      handleDocsToggle();
-                    }}
-                  >
-                    <span className="sidebar-product-icon-label">
-                      {DOC_ICON}
-                      <span>Documents</span>
-                    </span>
-                    {hasPermission('documents') && (
-                      <svg
-                        className={`sidebar-product-icon ${docsExpanded ? 'expanded' : ''}`}
-                        width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                      >
-                        <polyline points="6 9 12 15 18 9" />
-                      </svg>
-                    )}
-                  </button>
-                  {hasPermission('documents') && docsExpanded && (
-                    <ul className="sidebar-combos">
-                      {docItems.map(item => (
-                        <li key={item._id}>
-                          <button
-                            className={`sidebar-combo-btn ${activeView === 'documents' && searchParams.get('doc') === item.slug ? 'active' : ''}`}
-                            onClick={() => handleDocClick(item.slug)}
-                          >
-                            {item.name}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </li>
+                {/* Every folder and document name is listed to everyone. The
+                    lock sits on each document, which is what access is asked
+                    for, one or several at a time. */}
+                {docFolders.length === 0 && docItems.length === 0 ? (
+                  <li className="sidebar-docs-empty">No documents yet</li>
+                ) : (
+                  renderDocBranch('', 0)
+                )}
               </ul>
             </div>
           </>

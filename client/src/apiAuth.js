@@ -17,8 +17,15 @@ export function installApiAuth() {
         || url.startsWith(`${window.location.origin}/api/`);
 
       if (sameOriginApi) {
-        // Admin edits carry admin_token; a signed-in reader carries docs_token.
-        const token = localStorage.getItem('admin_token') || sessionStorage.getItem('docs_token');
+        // Which token depends on which app is asking, NOT on which one happens to
+        // be stored. admin_token lives in localStorage and outlives the tab, so
+        // preferring it everywhere let an admin session quietly elevate the docs
+        // site - and now that the content routes decide folder access from the
+        // token, that handed the reader folders they were never granted.
+        const onAdmin = window.location.pathname.startsWith('/admin');
+        const token = onAdmin
+          ? localStorage.getItem('admin_token')
+          : sessionStorage.getItem('docs_token');
         if (token) {
           const headers = new Headers(
             (init && init.headers) || (input instanceof Request ? input.headers : undefined)

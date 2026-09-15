@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import CfLoader from './CfLoader';
+import DocumentAccessRequest from './DocumentAccessRequest';
 import UpdatedOn from './UpdatedOn';
 import { reportDownload } from '../reportDownload';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } from 'docx';
@@ -165,15 +166,28 @@ function DocumentPage({ slug }) {
   const [item, setItem] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [locked, setLocked] = useState(null);
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (!slug) return;
     setLoading(true);
     setError('');
+    setLocked(null);
     fetch(`/api/documents/${slug}`)
-      .then(res => res.json())
-      .then(data => {
+      .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
+      .then(({ status, data }) => {
+        // This document has not been granted to this reader: offer the request
+        // for it (and its locked neighbours) rather than a bare error.
+        if (status === 403 && data.documentId) {
+          setLocked({
+            documentId: data.documentId,
+            documentName: data.documentName || '',
+            folderId: data.folderId || '',
+            folderName: data.folderName || '',
+          });
+          return;
+        }
         if (data.error) throw new Error(data.error);
         setItem(data.item);
       })
@@ -182,6 +196,14 @@ function DocumentPage({ slug }) {
   }, [slug]);
 
   if (loading) return <div className="cloud-info-page"><CfLoader inline /></div>;
+  if (locked) return (
+    <DocumentAccessRequest
+      documentId={locked.documentId}
+      documentName={locked.documentName}
+      folderId={locked.folderId}
+      folderName={locked.folderName}
+    />
+  );
   if (error) return <div className="cloud-info-page"><p className="error-msg">{error}</p></div>;
   if (!item) return <div className="cloud-info-page"><p>Select a document from the sidebar.</p></div>;
 

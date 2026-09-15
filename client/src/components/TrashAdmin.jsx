@@ -2,7 +2,7 @@
 import { showToast } from './Toast';
 
 function TrashAdmin({ onChanged }) {
-  const [trash, setTrash] = useState({ features: [], productConfigs: [], matrices: [], cloudInfos: [], combinations: [], documents: [] });
+  const [trash, setTrash] = useState({ features: [], productConfigs: [], matrices: [], cloudInfos: [], combinations: [], documents: [], documentFolders: [] });
   const [loading, setLoading] = useState(true);
   const [permanentDelete, setPermanentDelete] = useState(null);
   const [deleteInput, setDeleteInput] = useState('');
@@ -67,7 +67,7 @@ function TrashAdmin({ onChanged }) {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
-  const totalItems = trash.features.length + trash.productConfigs.length + trash.matrices.length + trash.cloudInfos.length + (trash.combinations ? trash.combinations.length : 0) + (trash.documents ? trash.documents.length : 0);
+  const totalItems = trash.features.length + trash.productConfigs.length + trash.matrices.length + trash.cloudInfos.length + (trash.combinations ? trash.combinations.length : 0) + (trash.documents ? trash.documents.length : 0) + (trash.documentFolders ? trash.documentFolders.length : 0);
 
   const renderSection = (title, items, type, getLabel) => {
     if (!items || items.length === 0) return null;
@@ -135,6 +135,14 @@ function TrashAdmin({ onChanged }) {
           {renderSection('Combinations', trash.combinations || [], 'combination', c => c.productType + ' / ' + c.combination)}
           {renderSection('Compatibility Matrices', trash.matrices, 'compatibility', m => m.name)}
           {renderSection('Cloud Info', trash.cloudInfos, 'cloudInfo', i => i.name)}
+          {renderSection('Document Folders', trash.documentFolders || [], 'documentFolder', f => {
+            const carries = [];
+            if (f.subfolders) carries.push(`${f.subfolders} subfolder${f.subfolders > 1 ? 's' : ''}`);
+            if (f.documents) carries.push(`${f.documents} document${f.documents > 1 ? 's' : ''}`);
+            // Restoring the folder brings these back with it, so the row says so
+            // rather than listing them separately in the Trash.
+            return f.name + (carries.length ? ` (with ${carries.join(' and ')})` : '');
+          })}
           {renderSection('Documents', trash.documents || [], 'document', d => d.name)}
         </>
       )}

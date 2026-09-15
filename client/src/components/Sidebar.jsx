@@ -113,7 +113,10 @@ function Sidebar() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => { loadDocs(); }, [loadDocs, activeView, searchParams]);
+  // Reload the document tree when the active section changes, on mount, and on
+  // window focus (below) — not on every URL change. Clicking between documents
+  // does not alter the tree, so refetching on each navigation was wasted work.
+  useEffect(() => { loadDocs(); }, [loadDocs, activeView]);
 
   useEffect(() => {
     const loadCompat = () => {

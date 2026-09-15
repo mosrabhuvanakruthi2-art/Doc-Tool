@@ -23,4 +23,5 @@ const documentFolderSchema = new mongoose.Schema({
 
 documentFolderSchema.index({ parentId: 1, order: 1 });
 
+documentFolderSchema.index({ deletedWith: 1 });
 module.exports = mongoose.model('DocumentFolder', documentFolderSchema);

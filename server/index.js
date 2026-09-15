@@ -543,12 +543,23 @@ app.post('/api/access-requests', requireAuth, async (req, res) => {
       const alreadyPending = [];
       const alreadyOpen = [];
 
+      // One query for every prior request in this batch, newest first, indexed
+      // in a Map by document id — instead of a findOne per document.
+      const priorRequests = await AccessRequest
+        .find({ email, documentId: { $in: docs.map(d => d._id) } })
+        .sort({ requestedAt: -1 })
+        .lean();
+      const priorByDoc = new Map();
+      for (const r of priorRequests) {
+        const key = String(r.documentId);
+        if (!priorByDoc.has(key)) priorByDoc.set(key, r); // first seen = newest
+      }
+
       for (const doc of docs) {
         if (canOpenDocument(access, folders, doc)) { alreadyOpen.push(doc.name); continue; }
 
-        const existing = await AccessRequest
-          .findOne({ email, documentId: doc._id })
-          .sort({ requestedAt: -1 });
+        const priorDoc = priorByDoc.get(String(doc._id));
+        const existing = priorDoc ? await AccessRequest.findById(priorDoc._id) : null;
 
         if (existing && existing.status === 'pending') { alreadyPending.push(doc.name); continue; }
 
@@ -3559,14 +3570,26 @@ app.get('/api/trash', requireAdmin, async (req, res) => {
     ]);
 
     // How much comes back with each deleted folder, so the Trash row can say so.
-    const folderCarries = await Promise.all(documentFolders.map(async (f) => {
-      const [subfolders, docs] = await Promise.all([
-        DocumentFolder.countDocuments({ deletedWith: f._id }),
-        DocModel.countDocuments({ deletedWith: f._id }),
-      ]);
-      return { id: f._id.toString(), subfolders, documents: docs };
-    }));
-    const carriesById = new Map(folderCarries.map(c => [c.id, c]));
+    // Two grouped counts for all folders at once, rather than a pair of queries
+    // per folder.
+    const folderIds = documentFolders.map(f => f._id);
+    const [subCounts, docCounts] = await Promise.all([
+      folderIds.length ? DocumentFolder.aggregate([
+        { $match: { deletedWith: { $in: folderIds } } },
+        { $group: { _id: '$deletedWith', n: { $sum: 1 } } },
+      ]) : [],
+      folderIds.length ? DocModel.aggregate([
+        { $match: { deletedWith: { $in: folderIds } } },
+        { $group: { _id: '$deletedWith', n: { $sum: 1 } } },
+      ]) : [],
+    ]);
+    const subMap = new Map(subCounts.map(r => [String(r._id), r.n]));
+    const docMap = new Map(docCounts.map(r => [String(r._id), r.n]));
+    const carriesById = new Map(documentFolders.map(f => [f._id.toString(), {
+      id: f._id.toString(),
+      subfolders: subMap.get(f._id.toString()) || 0,
+      documents: docMap.get(f._id.toString()) || 0,
+    }]));
     res.json({
       features: features.map(f => ({ ...mapFeature(f), deletedAt: f.deletedAt })),
       productConfigs: productConfigs.map(c => ({ id: c._id.toString(), name: c.name, combinations: c.combinations, deletedAt: c.deletedAt })),

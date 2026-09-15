@@ -19,4 +19,6 @@ const compatibilityMatrixSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+compatibilityMatrixSchema.index({ isDeleted: 1, order: 1 });
+
 module.exports = mongoose.model('CompatibilityMatrix', compatibilityMatrixSchema);

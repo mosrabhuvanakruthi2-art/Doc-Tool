@@ -19,4 +19,8 @@ const documentSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+// Trash groups documents by the folder whose deletion swept them up.
+documentSchema.index({ deletedWith: 1 });
+// The tree lists a folder's live documents in order.
+documentSchema.index({ folderId: 1, isDeleted: 1, order: 1 });
 module.exports = mongoose.model('Document', documentSchema);

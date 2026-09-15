@@ -11,4 +11,6 @@ const cloudInfoSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+cloudInfoSchema.index({ isDeleted: 1, order: 1 });
+
 module.exports = mongoose.model('CloudInfo', cloudInfoSchema);

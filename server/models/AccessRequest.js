@@ -17,4 +17,10 @@ const schema = new mongoose.Schema({
   respondedAt: { type: Date },
 });
 
-module.exports = mongoose.model('AccessRequest', schema);
+// A reader's own requests, and the per-document / per-folder existence checks
+// done when a request is created, all filter by email first.
+schema.index({ email: 1, requestedAt: -1 });
+schema.index({ email: 1, documentId: 1 });
+schema.index({ email: 1, folderId: 1 });
+module.exports = mongoose.model('AccessRequest', schema);
+

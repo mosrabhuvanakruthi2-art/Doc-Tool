@@ -52,8 +52,10 @@ function DocumentsAdmin({ onChanged }) {
   const [hint, setHint] = useState(null);   // { id, mode: 'before' | 'after' | 'inside' }
 
   const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
   const editorRef = useRef(null);
   const formTopRef = useRef(null);
+  const [folderUpload, setFolderUpload] = useState(null); // { done, total } while importing
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -462,6 +464,102 @@ function DocumentsAdmin({ onChanged }) {
     }
   };
 
+  // Import a folder from the computer, recreating its structure under Documents
+  // and uploading each supported file into the matching folder. Folders that
+  // already exist (by name, in the same parent) are reused, not duplicated.
+  const DOC_EXTS = ['docx', 'pdf', 'xlsx', 'xls'];
+
+  const createFolder = async (folderName, parentId) => {
+    const res = await fetch('/api/document-folders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: folderName, parentId: parentId || null }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || 'Failed to create folder');
+    return data.folder;
+  };
+
+  const uploadOneFile = async (file, folderId) => {
+    const ext = file.name.split('.').pop().toLowerCase();
+    const baseName = file.name.replace(/\.[^.]+$/, '');
+    if (ext === 'docx') {
+      const arrayBuffer = await file.arrayBuffer();
+      const result = await mammoth.convertToHtml({ arrayBuffer }, {
+        convertImage: mammoth.images.imgElement((image) =>
+          image.read('base64').then((b) => ({ src: 'data:' + image.contentType + ';base64,' + b }))),
+      });
+      const res = await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: baseName, content: result.value, fileType: 'docx', folderId: folderId || null }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'Upload failed');
+    } else {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('name', baseName);
+      if (folderId) form.append('folderId', folderId);
+      const res = await fetch('/api/documents/upload', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'Upload failed');
+    }
+  };
+
+  const handleFolderUpload = async (e) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = '';
+    const files = picked.filter(f => DOC_EXTS.includes(f.name.split('.').pop().toLowerCase()));
+    if (!files.length) { showToast('No PDF, DOCX or XLSX files found in that folder', 'error'); return; }
+
+    // Live snapshot of the tree so we reuse folders that already exist and the
+    // ones we create in this run. Keyed by "parentId/childName".
+    const byKey = new Map(folders.map(f => [(f.parentId || '') + '/' + f.name, f.id]));
+
+    const ensureFolderPath = async (segments) => {
+      let parentId = '';
+      for (const seg of segments) {
+        const key = (parentId || '') + '/' + seg;
+        let id = byKey.get(key);
+        if (!id) {
+          const made = await createFolder(seg, parentId || null);
+          id = made.id;
+          byKey.set(key, id);
+        }
+        parentId = id;
+      }
+      return parentId;
+    };
+
+    setFolderUpload({ done: 0, total: files.length });
+    let ok = 0; const failed = [];
+    for (const file of files) {
+      try {
+        // webkitRelativePath is like "Guides/Migration/setup.pdf" — everything
+        // before the filename is the folder path to recreate.
+        const parts = (file.webkitRelativePath || file.name).split('/').filter(Boolean);
+        const dirs = parts.slice(0, -1);
+        const folderId = dirs.length ? await ensureFolderPath(dirs) : '';
+        await uploadOneFile(file, folderId);
+        ok += 1;
+      } catch (err) {
+        failed.push(file.webkitRelativePath || file.name);
+      }
+      setFolderUpload({ done: ok + failed.length, total: files.length });
+    }
+    setFolderUpload(null);
+    await fetchAll();
+    notifyChanged();
+    const skipped = picked.length - files.length;
+    showToast(
+      `Imported ${ok} document${ok !== 1 ? 's' : ''}`
+      + (failed.length ? `, ${failed.length} failed` : '')
+      + (skipped ? `. Skipped ${skipped} unsupported file${skipped !== 1 ? 's' : ''}.` : ''),
+      failed.length ? 'error' : 'success',
+    );
+  };
+
   const handleSave = async () => {
     if (!name.trim()) { showToast('Name is required', 'error'); return; }
     const finalContent = editorRef.current ? editorRef.current.innerHTML : content;
@@ -715,7 +813,25 @@ function DocumentsAdmin({ onChanged }) {
         <div className="cloud-info-header">
           <h3>Documents Management</h3>
           <div className="doc-tree-header-actions">
+            <button
+              className="btn-create-new btn-create-folder"
+              onClick={() => folderInputRef.current && folderInputRef.current.click()}
+              disabled={!!folderUpload}
+            >
+              {folderUpload ? `Importing ${folderUpload.done}/${folderUpload.total}…` : 'Upload Folder'}
+            </button>
             <button className="btn-create-new btn-create-folder" onClick={() => startNewFolder('')}>+ New Folder</button>
+            {/* webkitdirectory lets the browser hand us a whole folder, with each
+                file's path in webkitRelativePath. */}
+            <input
+              ref={folderInputRef}
+              type="file"
+              webkitdirectory=""
+              directory=""
+              multiple
+              hidden
+              onChange={handleFolderUpload}
+            />
           </div>
         </div>
 
@@ -723,7 +839,6 @@ function DocumentsAdmin({ onChanged }) {
           <p className="cloud-info-empty">No folders yet. Use "+ New Folder" to build a structure, then add documents inside a folder with "+ Document".</p>
         ) : (
           <>
-            <p className="doc-tree-hint">Drag a row by its handle to reorder it, or onto a folder to move it inside.</p>
             <div className="doc-tree">
               {newFolderIn === '' && renderNewFolderInput(0)}
               {rootFolders.map(folder => renderFolderNode(folder, 0))}

@@ -1,14 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { reportLogout } from './reportDownload';
 import { Routes, Route, useSearchParams } from 'react-router-dom';
 import { startMicrosoftLogin } from './msalOauth';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import FeatureTable from './components/FeatureTable';
-import CompatibilityTable from './components/CompatibilityTable';
-import CloudInfoPage from './components/CloudInfoPage';
-import DocumentPage from './components/DocumentPage';
-import AdminPage from './components/AdminPage';
+const CompatibilityTable = lazy(() => import('./components/CompatibilityTable'));
+const CloudInfoPage = lazy(() => import('./components/CloudInfoPage'));
+const DocumentPage = lazy(() => import('./components/DocumentPage'));
+const AdminPage = lazy(() => import('./components/AdminPage'));
 import AdminLogin from './components/AdminLogin';
 import ToastContainer from './components/Toast';
 import CfLoader from './components/CfLoader';
@@ -96,7 +96,7 @@ function AdminRoute({ darkMode, setDarkMode }) {
     <>
       <Header darkMode={darkMode} onToggleDark={() => setDarkMode(!darkMode)} isAdmin={true} onLogout={handleLogout} />
       <div className="app-body">
-        <AdminPage />
+        <Suspense fallback={<CfLoader />}><AdminPage /></Suspense>
       </div>
     </>
   );
@@ -118,9 +118,10 @@ function MainContent() {
     }
   }, []);
 
-  if (view === 'compatibility' && matrixSlug) return <CompatibilityTable matrixSlug={matrixSlug} />;
-  if (view === 'cloudinfo' && infoSlug) return <CloudInfoPage slug={infoSlug} />;
-  if (view === 'documents' && docSlug) return <DocumentPage slug={docSlug} />;
+  const lazyView = (node) => <Suspense fallback={<CfLoader inline />}>{node}</Suspense>;
+  if (view === 'compatibility' && matrixSlug) return lazyView(<CompatibilityTable matrixSlug={matrixSlug} />);
+  if (view === 'cloudinfo' && infoSlug) return lazyView(<CloudInfoPage slug={infoSlug} />);
+  if (view === 'documents' && docSlug) return lazyView(<DocumentPage slug={docSlug} />);
   return <FeatureTable />;
 }
 

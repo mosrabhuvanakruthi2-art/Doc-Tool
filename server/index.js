@@ -10,26 +10,8 @@ const dns = require('dns');
 const multer = require('multer');
 const jwt = require('jsonwebtoken');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const net = require('net');
-const createDOMPurify = require('isomorphic-dompurify');
-
-function sanitizeHtml(html) {
-  if (typeof html !== 'string' || !html) return '';
-  return createDOMPurify.sanitize(html, {
-    ALLOWED_TAGS: [
-      'p','br','hr','span','div','strong','b','em','i','u','s','strike','sub','sup',
-      'h1','h2','h3','h4','h5','h6','blockquote','pre','code',
-      'ul','ol','li','a','img','table','thead','tbody','tfoot','tr','th','td','caption','figure','figcaption'],
-    ALLOWED_ATTR: ['href','title','alt','src','width','height','colspan','rowspan','style','class','target','rel'],
-    // Permit inline base64 images (documents embed them) and normal links; block
-    // javascript:, data: on non-images, etc.
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|data:image\/(?:png|jpe?g|gif|webp|bmp);base64,|[^a-z]|\/|#)/i,
-    ADD_ATTR: ['target'],
-    FORBID_TAGS: ['script','style','iframe','object','embed','form','input','svg','math'],
-    FORBID_ATTR: ['onerror','onload','onclick','onmouseover'],
-  });
-}
+const { sanitizeHtml } = require('./utils/sanitizeHtml');
 
 const Feature = require('./models/Feature');
 const Category = require('./models/Category');
@@ -44,6 +26,8 @@ const AccessRequest = require('./models/AccessRequest');
 const Revision = require('./models/Revision');
 const AuditLog = require('./models/AuditLog');
 const { buildChanges, buildInitialChanges } = require('./utils/revisionDiff');
+const { qStr, qEnum } = require('./utils/safeQuery');
+const { HttpError, requireString } = require('./utils/validate');
 const { buildFieldChains } = require('./utils/revisionHistory');
 const { buildFeatureTableDocx } = require('./utils/featureDocx');
 
@@ -94,13 +78,18 @@ app.use(cors({
 app.use(express.json({ limit: API_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: API_BODY_LIMIT }));
 
-// Throttle authentication so passwords and the admin key cannot be brute-forced.
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many attempts. Try again in a few minutes.' },
+// Correct client IP behind nginx/other proxy, so limits key on the real client.
+app.set('trust proxy', 1);
+
+// Tiered rate limiting: a global ceiling on every API request, with tighter
+// limits on auth and uploads (see middleware/rateLimits).
+const { globalLimiter, uploadLimiter, authLimiter } = require('./middleware/rateLimits');
+// The global cap targets anonymous/public traffic (floods, scraping). A signed-in
+// admin doing bulk work (e.g. importing a folder of documents) is trusted and skipped.
+app.use('/api/', (req, res, next) => {
+  const decoded = decodeToken(req);
+  if (decoded && decoded.role === 'admin') return next();
+  return globalLimiter(req, res, next);
 });
 
 // --------------- Auth ---------------
@@ -110,6 +99,17 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 const FULL_PERMISSIONS = { productTypes: true, compatibility: true, cloudInfo: true, documents: true };
+
+// Unexpected errors are logged in full server-side and returned to the client as
+// a generic message, so internal details (stack, driver errors) never leak.
+function sendServerError(res, err) {
+  // A deliberate client-facing error (bad input, 4xx) keeps its message and status.
+  if (err && err.expose && err.status && err.status < 500) {
+    return res.status(err.status).json({ error: err.message });
+  }
+  console.error('[server error]', (err && err.stack) || err);
+  res.status(500).json({ error: 'Something went wrong. Please try again.' });
+}
 
 function decodeToken(req) {
   const authHeader = req.headers.authorization;
@@ -148,10 +148,10 @@ async function requireAdmin(req, res, next) {
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+    const email = requireString(req.body.email, 'Email').toLowerCase();
+    const password = requireString(req.body.password, 'Password');
 
-    if (email.toLowerCase().trim() === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
+    if (email === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
       const payload = { email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS };
       const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
       await audit(req, {
@@ -205,7 +205,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     });
     res.json({ success: true, token, user: { email: user.email, name: user.name, role: user.role, permissions: perms } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -383,7 +383,7 @@ app.post('/api/auth/microsoft/exchange', authLimiter, async (req, res) => {
     });
     res.json({ success: true, token, user: { email, name, role, permissions } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -423,7 +423,7 @@ app.post('/api/auth/microsoft', authLimiter, async (req, res) => {
     });
     res.json({ success: true, token, user: { email, name, role, permissions } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -658,7 +658,7 @@ app.post('/api/access-requests', requireAuth, async (req, res) => {
     });
     res.json({ success: true, requestId: request._id });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -684,7 +684,7 @@ app.get('/api/access-requests/mine', async (req, res) => {
         respondedAt: r.respondedAt || null,
       })),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.get('/api/access-requests', requireAdmin, async (req, res) => {
@@ -699,7 +699,7 @@ app.get('/api/access-requests', requireAdmin, async (req, res) => {
         folderName: r.folderName || '',
       })),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/access-requests/:id/approve', requireAdmin, async (req, res) => {
@@ -768,7 +768,7 @@ app.put('/api/access-requests/:id/approve', requireAdmin, async (req, res) => {
       },
     });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/access-requests/:id/deny', requireAdmin, async (req, res) => {
@@ -796,7 +796,7 @@ app.put('/api/access-requests/:id/deny', requireAdmin, async (req, res) => {
       details: { requestEmail: request.email, requestName: request.name || null, folder: request.folderName || null },
     });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/access-requests/:id/revoke', requireAdmin, async (req, res) => {
@@ -834,7 +834,7 @@ app.put('/api/access-requests/:id/revoke', requireAdmin, async (req, res) => {
       },
     });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // --------------- User Management (Admin only) ---------------
@@ -843,7 +843,7 @@ app.get('/api/users', requireAdmin, async (req, res) => {
   try {
     const users = await User.find().select('-password').sort({ createdAt: -1 }).lean();
     res.json({ users: users.map(u => ({ ...u, id: u._id.toString() })) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.post('/api/users', requireAdmin, async (req, res) => {
@@ -869,7 +869,7 @@ app.post('/api/users', requireAdmin, async (req, res) => {
       details: { role: user.role, permissions: user.permissions },
     });
     res.json({ success: true, user: { ...obj, id: obj._id.toString() } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/users/:id', requireAdmin, async (req, res) => {
@@ -934,7 +934,7 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
       details: { changed: Object.keys(update), passwordChanged: !!password, role: user.role, isActive: user.isActive },
     });
     res.json({ success: true, user: { ...obj, id: obj._id.toString() } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.delete('/api/users/:id', requireAdmin, async (req, res) => {
@@ -948,7 +948,7 @@ app.delete('/api/users/:id', requireAdmin, async (req, res) => {
       details: { role: user.role },
     });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // --------------- MongoDB Connection ---------------
@@ -1148,7 +1148,7 @@ app.get('/api/categories', async (req, res) => {
     });
     res.json(grouped);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1171,7 +1171,7 @@ app.post('/api/categories', requireAdmin, async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1187,7 +1187,7 @@ app.get('/api/product-config', async (req, res) => {
       configs: configs.map(c => ({ id: c._id.toString(), name: c.name, combinations: c.combinations, featureListUrl: c.featureListUrl || '', order: c.order })),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1203,7 +1203,7 @@ app.post('/api/product-config', requireAdmin, async (req, res) => {
     await recordLifecycle('productConfig', config.toObject(), 'created', req);
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations, featureListUrl: config.featureListUrl, order: config.order } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1223,7 +1223,7 @@ app.put('/api/product-config/reorder', requireAdmin, async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1240,7 +1240,7 @@ app.put('/api/product-config/:id', requireAdmin, async (req, res) => {
     await recordRevision('productConfig', before, config, req);
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations, featureListUrl: config.featureListUrl, order: config.order } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1260,7 +1260,7 @@ app.put('/api/product-config/:id/reorder-combinations', requireAdmin, async (req
     });
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1277,7 +1277,7 @@ app.post('/api/product-config/:id/combinations', requireAdmin, async (req, res) 
     await recordRevision('productConfig', before, config.toObject(), req);
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1293,7 +1293,7 @@ app.delete('/api/product-config/:id', requireAdmin, async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1308,7 +1308,7 @@ app.delete('/api/product-config/:id/combinations/:combo', requireAdmin, async (r
     await recordRevision('productConfig', before, config.toObject(), req);
     res.json({ success: true, config: { id: config._id.toString(), name: config.name, combinations: config.combinations } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1378,7 +1378,7 @@ app.delete(['/api/product-types/combination', '/product-types/combination'], req
       deletedFeatures,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1428,13 +1428,15 @@ app.put(['/api/product-types/combination/rename', '/product-types/combination/re
     });
     res.json({ success: true, oldName, newName, productTypesAffected: configs.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
 app.delete('/api/features/by-scope', requireAdmin, async (req, res) => {
   try {
-    const { productType, scope, combination } = req.query;
+    const productType = qStr(req.query.productType);
+    const scope = qEnum(req.query.scope, ['inscope', 'outscope']);
+    const combination = qStr(req.query.combination);
     if (!productType || !scope) return res.status(400).json({ error: 'productType and scope are required' });
     const filter = { productType, scope, isDeleted: { $ne: true } };
     if (combination) filter.combination = combination;
@@ -1443,7 +1445,7 @@ app.delete('/api/features/by-scope', requireAdmin, async (req, res) => {
     await recordRevisions('feature', affected.map(doc => ({ after: doc })), 'deleted', req);
     res.json({ success: true, deletedCount: result.modifiedCount });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1520,16 +1522,19 @@ function mapFeature(f) {
 
 app.get('/api/features', async (req, res) => {
   try {
-    const { category, productType, scope, combination, search, tag } = req.query;
+    const pt = qStr(req.query.productType) || qStr(req.query.category);
+    const scope = qEnum(req.query.scope, ['inscope', 'outscope']);
+    const combination = qStr(req.query.combination);
+    const search = qStr(req.query.search);
+    const tag = qStr(req.query.tag);
     const filter = { isDeleted: { $ne: true } };
 
-    const pt = productType || category;
     if (pt) filter.productType = pt;
     if (scope) filter.scope = scope;
     if (combination) filter.combination = combination;
 
     if (search) {
-      const regex = new RegExp(search, 'i');
+      const regex = new RegExp(escapeRegex(search), 'i');
       filter.$or = [{ name: regex }, { description: regex }];
     }
 
@@ -1569,7 +1574,7 @@ app.get('/api/features', async (req, res) => {
       } : null,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1608,7 +1613,7 @@ app.post('/api/features', requireAdmin, async (req, res) => {
     await recordLifecycle('feature', feature.toObject(), 'created', req);
     res.json({ success: true, feature: mapFeature(feature.toObject()) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1682,7 +1687,7 @@ app.post('/api/features/bulk', requireAdmin, async (req, res) => {
     const mapped = saved.map(f => mapFeature(f.toObject()));
     res.json({ success: true, features: mapped, count: mapped.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1704,7 +1709,7 @@ app.put('/api/features/rename-family', requireAdmin, async (req, res) => {
     })), 'updated', req);
     res.json({ success: true, modified: result.modifiedCount });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1729,7 +1734,7 @@ app.put('/api/features/reorder', requireAdmin, async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1745,7 +1750,7 @@ app.put('/api/features/:id', requireAdmin, async (req, res) => {
     await recordRevision('feature', before, feature, req);
     res.json({ success: true, feature: mapFeature(feature) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1756,7 +1761,7 @@ app.delete('/api/features/:id', requireAdmin, async (req, res) => {
     await recordLifecycle('feature', feature.toObject(), 'deleted', req);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1898,7 +1903,7 @@ app.get('/api/internal/v1/product-types', requireInternalKey, async (req, res) =
     }
     res.json(body);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -1954,7 +1959,7 @@ app.get('/api/internal/v1/word-doc', requireInternalKey, async (req, res) => {
     });
     res.end(built.buffer);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2007,13 +2012,20 @@ async function audit(req, entry) {
 
 // Shared by the listing and the CSV export.
 function buildAuditFilter(query) {
-  const { q, action, category, outcome, actorEmail, from, to, targetType } = query;
+  const q = qStr(query.q);
+  const action = qStr(query.action);
+  const category = qStr(query.category);
+  const outcome = qEnum(query.outcome, ['success', 'failure']);
+  const targetType = qStr(query.targetType);
+  const actorEmail = qStr(query.actorEmail);
+  const from = qStr(query.from);
+  const to = qStr(query.to);
   const filter = {};
   if (action) filter.action = action;
   if (category) filter.category = category;
   if (outcome) filter.outcome = outcome;
   if (targetType) filter.targetType = targetType;
-  if (actorEmail) filter.actorEmail = String(actorEmail).toLowerCase().trim();
+  if (actorEmail) filter.actorEmail = actorEmail.toLowerCase().trim();
   if (from || to) {
     filter.at = {};
     if (from) filter.at.$gte = new Date(from);
@@ -2067,7 +2079,7 @@ app.post('/api/audit/download', requireAuth, async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2086,7 +2098,7 @@ app.post('/api/audit/logout', requireAuth, async (req, res) => {
     });
     res.json({ success: true, recorded: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2109,7 +2121,7 @@ app.get('/api/audit-logs', requireAdmin, async (req, res) => {
       pages: Math.max(Math.ceil(total / limit), 1),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2138,7 +2150,7 @@ app.get('/api/audit-logs/filters', requireAdmin, async (req, res) => {
       trackingSince: oldest ? oldest.at : null,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2167,7 +2179,7 @@ app.get('/api/audit-logs/export', requireAdmin, async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename="audit-log-' + stamp + '.csv"');
     res.send(rows.join('\n'));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2475,7 +2487,7 @@ app.get('/api/notifications', async (req, res) => {
       canPersistRead: !!account.dbUser,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2510,7 +2522,7 @@ app.post('/api/notifications/read', requireAuth, async (req, res) => {
     await user.save();
     res.json({ success: true, persisted: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2526,7 +2538,7 @@ app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
     await account.dbUser.save();
     res.json({ success: true, persisted: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2534,7 +2546,9 @@ app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
 // scope). Each row reports one chain per field: created -> updated to -> current.
 app.get('/api/feature-history', requireAuth, async (req, res) => {
   try {
-    const { productType, combination, scope } = req.query;
+    const productType = qStr(req.query.productType);
+    const scope = qEnum(req.query.scope, ['inscope', 'outscope']);
+    const combination = qStr(req.query.combination);
     const filter = {};
     if (productType) filter.productType = productType;
     if (scope) filter.scope = scope;
@@ -2575,7 +2589,7 @@ app.get('/api/feature-history', requireAuth, async (req, res) => {
 
     res.json({ rows, totalFeatures: features.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2623,7 +2637,7 @@ app.get('/api/history/:entityType/:entityId', requireAuth, async (req, res) => {
       }] : [],
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2733,13 +2747,13 @@ app.get('/api/revisions/:entityType/:entityId', requireAuth, async (req, res) =>
       .lean();
     res.json({ revisions: revisions.map(r => ({ ...r, id: r._id.toString() })) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
 // --------------- Screenshot Upload ---------------
 
-app.post('/api/screenshots', requireAdmin, (req, res) => {
+app.post('/api/screenshots', uploadLimiter, requireAdmin, (req, res) => {
   upload.array('screenshots', SCREENSHOT_UPLOAD_LIMIT)(req, res, (err) => {
     if (err) {
       if (err instanceof multer.MulterError && err.code === 'LIMIT_UNEXPECTED_FILE') {
@@ -2789,7 +2803,7 @@ app.get('/api/compatibility', async (req, res) => {
       .lean();
     res.json({ matrices });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2799,7 +2813,7 @@ app.get('/api/compatibility/:slug', async (req, res) => {
     if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
     res.json({ matrix: { ...matrix, id: matrix._id.toString() } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2818,7 +2832,7 @@ app.post('/api/compatibility', requireAdmin, async (req, res) => {
     await recordLifecycle('compatibility', matrix.toObject(), 'created', req);
     res.json({ success: true, matrix: { ...matrix.toObject(), id: matrix._id.toString() } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2839,7 +2853,7 @@ app.put('/api/compatibility/reorder', requireAdmin, async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2862,7 +2876,7 @@ app.put('/api/compatibility/:id', requireAdmin, async (req, res) => {
     await recordRevision('compatibility', before, matrix, req);
     res.json({ success: true, matrix: { ...matrix, id: matrix._id.toString() } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2873,7 +2887,7 @@ app.delete('/api/compatibility/:id', requireAdmin, async (req, res) => {
     await recordLifecycle('compatibility', matrix.toObject(), 'deleted', req);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2893,7 +2907,7 @@ app.get('/api/cloud-info', async (req, res) => {
       .sort({ order: 1, createdAt: 1 }).lean();
     res.json({ items: items.map(i => ({ ...i, id: i._id.toString() })) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2903,7 +2917,7 @@ app.get('/api/cloud-info/:slug', async (req, res) => {
     if (!item) return res.status(404).json({ error: 'Not found' });
     res.json({ item: { ...item, id: item._id.toString() } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2927,7 +2941,7 @@ app.post('/api/cloud-info', requireAdmin, async (req, res) => {
       stats: validation.stats,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2960,7 +2974,7 @@ app.put('/api/cloud-info/:id', requireAdmin, async (req, res) => {
       stats: contentStats || getCloudInfoContentStats(item.content || ''),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2971,7 +2985,7 @@ app.delete('/api/cloud-info/:id', requireAdmin, async (req, res) => {
     await recordLifecycle('cloudInfo', item.toObject(), 'deleted', req);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -2991,7 +3005,7 @@ app.put('/api/cloud-info-reorder', requireAdmin, async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -3039,7 +3053,7 @@ app.get('/api/documents', async (req, res) => {
         };
       }),
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.get('/api/documents/:slug', async (req, res) => {
@@ -3062,7 +3076,7 @@ app.get('/api/documents/:slug', async (req, res) => {
       }
     }
     res.json({ item: { ...item, id: item._id.toString() } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/documents/reorder', requireAdmin, async (req, res) => {
@@ -3080,7 +3094,7 @@ app.put('/api/documents/reorder', requireAdmin, async (req, res) => {
       details: { count: (orderedIds || []).length },
     });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.post('/api/documents', requireAdmin, async (req, res) => {
@@ -3100,7 +3114,7 @@ app.post('/api/documents', requireAdmin, async (req, res) => {
     });
     await recordLifecycle('document', item.toObject(), 'created', req);
     res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 const docsDir = path.join(__dirname, 'assets', 'documents');
@@ -3140,7 +3154,7 @@ const docUpload = multer({
   },
 });
 
-app.post('/api/documents/upload', requireAdmin, docUpload.single('file'), async (req, res) => {
+app.post('/api/documents/upload', uploadLimiter, requireAdmin, docUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const name = req.body.name || path.parse(req.file.originalname).name;
@@ -3185,7 +3199,7 @@ app.post('/api/documents/upload', requireAdmin, docUpload.single('file'), async 
       details: { size: req.file && req.file.size, mimetype: req.file && req.file.mimetype },
     });
     res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/documents/:id', requireAdmin, async (req, res) => {
@@ -3219,7 +3233,7 @@ app.put('/api/documents/:id', requireAdmin, async (req, res) => {
       await auditDocumentMove(req, item, before && before.folderId, update.folderId);
     }
     res.json({ success: true, item: { ...item, id: item._id.toString() } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.delete('/api/documents/:id', requireAdmin, async (req, res) => {
@@ -3228,7 +3242,7 @@ app.delete('/api/documents/:id', requireAdmin, async (req, res) => {
     if (!item) return res.status(404).json({ error: 'Not found' });
     await recordLifecycle('document', item.toObject(), 'deleted', req);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // Accepts '' / null / undefined as "the top level" and rejects anything that is
@@ -3270,7 +3284,7 @@ app.put('/api/documents/:id/folder', requireAdmin, async (req, res) => {
     await item.save();
     await auditDocumentMove(req, item, previous, target);
     res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // --------------- Document Folders ---------------
@@ -3392,7 +3406,7 @@ app.get('/api/document-folders', async (req, res) => {
   try {
     const folders = await liveFolders();
     res.json({ folders: folders.map(mapFolder) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.post('/api/document-folders', requireAdmin, async (req, res) => {
@@ -3424,7 +3438,7 @@ app.post('/api/document-folders', requireAdmin, async (req, res) => {
       details: { parent: where || 'root' },
     });
     res.json({ success: true, folder: mapFolder(folder) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/document-folders/reorder', requireAdmin, async (req, res) => {
@@ -3441,7 +3455,7 @@ app.put('/api/document-folders/reorder', requireAdmin, async (req, res) => {
       details: { count: orderedIds.length },
     });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 app.put('/api/document-folders/:id', requireAdmin, async (req, res) => {
@@ -3502,7 +3516,7 @@ app.put('/api/document-folders/:id', requireAdmin, async (req, res) => {
       details: { before: beforeName, after: nextName, moved: movedParent },
     });
     res.json({ success: true, folder: mapFolder(folder) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // Deleting a folder takes everything inside it along: subfolders and documents
@@ -3549,7 +3563,7 @@ app.delete('/api/document-folders/:id', requireAdmin, async (req, res) => {
       details: { parent: where || 'root', subfolders: subtree.length, documents: docs.map(d => d.name) },
     });
     res.json({ success: true, subfolders: subtree.length, documents: docs.length });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendServerError(res, err); }
 });
 
 // --------------- Trash Management ---------------
@@ -3612,7 +3626,7 @@ app.get('/api/trash', requireAdmin, async (req, res) => {
       })),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -3716,7 +3730,7 @@ app.put('/api/trash/restore/:type/:id', requireAdmin, async (req, res) => {
     await recordLifecycle(type, doc.toObject ? doc.toObject() : doc, 'restored', req);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -3797,7 +3811,7 @@ app.delete('/api/trash/permanent/:type/:id', requireAdmin, async (req, res) => {
     await Model.findByIdAndDelete(id);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendServerError(res, err);
   }
 });
 
@@ -3857,6 +3871,22 @@ app.get('/api/image-proxy', requireAuth, async (req, res) => {
   } catch (err) {
     res.status(500).send('Proxy error');
   }
+});
+
+// --------------- Error handling (backstop) ---------------
+
+// Unknown API path -> clean 404.
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
+
+// Catches anything thrown outside a route's own try/catch. Full detail to the
+// server log; a generic message to the client (or the deliberate 4xx message).
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (err && err.expose && err.status && err.status < 500) {
+    return res.status(err.status).json({ error: err.message });
+  }
+  console.error(`[unhandled ${req.method} ${req.originalUrl}]`, (err && err.stack) || err);
+  res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });
 
 // --------------- Start Server ---------------

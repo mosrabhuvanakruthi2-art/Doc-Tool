@@ -6145,3 +6145,7 @@ a:hover { text-decoration: underline; }
 }
 .cloud-info-list-item .btn-edit-sm,
 .cloud-info-list-item .btn-delete-inline { -webkit-user-drag: none; }
+
+/* Folder name is renamable by double-click */
+.doc-tree-name-editable { cursor: text; border-radius: 4px; padding: 1px 4px; margin: -1px -4px; }
+.doc-tree-name-editable:hover { background: var(--accent-light); box-shadow: inset 0 0 0 1px var(--border-color); }

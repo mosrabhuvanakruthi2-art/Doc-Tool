@@ -22,6 +22,8 @@ function CloudInfoAdmin({ onChanged }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleteInput, setDeleteInput] = useState('');
+  const [deleting, setDeleting] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [uploadStats, setUploadStats] = useState({ pageCount: 0, imageCount: 0 });
   const fileInputRef = useRef(null);
@@ -149,9 +151,10 @@ function CloudInfoAdmin({ onChanged }) {
   };
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await fetch(`/api/cloud-info/${id}`, { method: 'DELETE' });
-      setDeleteConfirm(null);
+      closeDeleteModal();
       showToast('Deleted successfully');
       await fetchItems();
       if (onChanged) onChanged();
@@ -162,6 +165,42 @@ function CloudInfoAdmin({ onChanged }) {
     } catch (err) {
       showToast(err.message, 'error');
     }
+    setDeleting(false);
+  };
+
+  const closeDeleteModal = () => { setDeleteConfirm(null); setDeleteInput(''); setDeleting(false); };
+
+  // Same typed-DELETE confirmation the Documents tab uses.
+  const renderDeleteModal = () => {
+    const item = deleteConfirm ? items.find(i => i._id === deleteConfirm) : null;
+    if (!item) return null;
+    return (
+      <div className="permanent-delete-modal" onClick={closeDeleteModal}>
+        <div className="permanent-delete-card" onClick={e => e.stopPropagation()}>
+          <h4>Delete Cloud Info</h4>
+          <p>You are about to delete <strong>&quot;{item.name}&quot;</strong>.</p>
+          <p>It moves to Trash and can be restored from there.</p>
+          <p>Type <strong>DELETE</strong> to confirm:</p>
+          <input
+            type="text"
+            value={deleteInput}
+            onChange={e => setDeleteInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && deleteInput === 'DELETE' && !deleting) handleDelete(item._id);
+              if (e.key === 'Escape') closeDeleteModal();
+            }}
+            placeholder="Type DELETE"
+            autoFocus
+          />
+          <div className="permanent-delete-actions">
+            <button className="btn-permanent-confirm" disabled={deleteInput !== 'DELETE' || deleting} onClick={() => handleDelete(item._id)}>
+              {deleting ? 'Deleting...' : 'Delete'}
+            </button>
+            <button className="btn-cancel" onClick={closeDeleteModal}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const handleBack = () => {
@@ -247,21 +286,14 @@ function CloudInfoAdmin({ onChanged }) {
                   </div>
                   <div className="cloud-info-list-actions">
                     <button className="btn-edit-sm" onClick={() => handleEdit(item)}>Edit</button>
-                    {deleteConfirm === item._id ? (
-                      <div className="delete-confirm-bar">
-                        <span>Delete "{item.name}"?</span>
-                        <button className="btn-confirm-yes" onClick={() => handleDelete(item._id)}>Yes, Delete</button>
-                        <button className="btn-confirm-cancel" onClick={() => setDeleteConfirm(null)}>Cancel</button>
-                      </div>
-                    ) : (
-                      <button className="btn-delete-inline" onClick={() => setDeleteConfirm(item._id)}>Delete</button>
-                    )}
+                    <button className="btn-delete-inline" onClick={() => { setDeleteInput(''); setDeleteConfirm(item._id); }}>Delete</button>
                   </div>
                 </div>
               ))}
             </div>
           </>
         )}
+        {renderDeleteModal()}
       </div>
     );
   }

@@ -692,7 +692,13 @@ function DocumentsAdmin({ onChanged }) {
                 }}
               />
             ) : (
-              <span className="doc-tree-name">{folder.name}</span>
+              <span
+                className="doc-tree-name doc-tree-name-editable"
+                title="Double-click to rename"
+                onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(folder.id); setRenameValue(folder.name); }}
+              >
+                {folder.name}
+              </span>
             )}
             <span className="doc-tree-count">{count === 0 ? 'empty' : `${count} item${count > 1 ? 's' : ''}`}</span>
           </div>
@@ -707,7 +713,6 @@ function DocumentsAdmin({ onChanged }) {
               <>
                 <button className="btn-tree-action" onClick={() => startNewFolder(folder.id)}>+ Subfolder</button>
                 <button className="btn-tree-action" onClick={() => handleNew(folder.id)}>+ Document</button>
-                <button className="btn-edit-sm" onClick={() => { setRenamingId(folder.id); setRenameValue(folder.name); }}>Rename</button>
                 <button className="btn-delete-inline" onClick={() => { setDeleteConfirm(null); setDeleteInput(''); setFolderDeleteConfirm(folder.id); }}>Delete</button>
               </>
             )}

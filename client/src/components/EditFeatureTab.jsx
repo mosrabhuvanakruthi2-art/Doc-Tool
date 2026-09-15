@@ -121,6 +121,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
   const [savingId, setSavingId] = useState(null);
   const [deletePTConfirm, setDeletePTConfirm] = useState(false);
   const [deleteComboAllConfirm, setDeleteComboAllConfirm] = useState(false);
+  const [deleteInput, setDeleteInput] = useState('');
   const [showComboRename, setShowComboRename] = useState(false);
   const [comboRenameDraft, setComboRenameDraft] = useState('');
   const [comboRenameSaving, setComboRenameSaving] = useState(false);
@@ -352,6 +353,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
       setFeatures([]);
       setOriginalFeatures([]);
       setDeletePTConfirm(false);
+      setDeleteInput('');
       showToast(`All ${scopeLabel} features for "${productType}" deleted.`);
       if (onChanged) onChanged();
     } catch (err) {
@@ -407,6 +409,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
       setOriginalFeatures([]);
       setCombination('');
       setDeleteComboAllConfirm(false);
+      setDeleteInput('');
       setShowComboRename(false);
       setComboRenameDraft('');
       await refresh();
@@ -606,13 +609,19 @@ function EditFeatureTab({ refreshKey, onChanged }) {
           </div>
         </div>
         {deletePTConfirm && (
-          <div className="delete-confirm-bar">
-            <span className="delete-confirm-msg">
-              Delete all <strong>{scope === 'inscope' ? 'In Scope' : 'Out of Scope'}</strong> features for <strong>{productType}</strong>?
-              <br /><small>Only features in this scope will be removed. The product type itself will remain.</small>
-            </span>
-            <button className="btn-yes" onClick={handleDeleteProductType}>Yes, Delete</button>
-            <button className="btn-no" onClick={() => setDeletePTConfirm(false)}>Cancel</button>
+          <div className="permanent-delete-modal" onClick={() => { setDeletePTConfirm(false); setDeleteInput(''); }}>
+            <div className="permanent-delete-card" onClick={e => e.stopPropagation()}>
+              <h4>Delete {scope === 'inscope' ? 'In Scope' : 'Out of Scope'} Features</h4>
+              <p>You are about to delete all <strong>{scope === 'inscope' ? 'In Scope' : 'Out of Scope'}</strong> features for <strong>&quot;{productType}&quot;</strong>.</p>
+              <p>Only features in this scope will be removed; the product type itself remains.</p>
+              <p>Type <strong>DELETE</strong> to confirm:</p>
+              <input type="text" value={deleteInput} onChange={e => setDeleteInput(e.target.value)} autoFocus placeholder="Type DELETE"
+                onKeyDown={(e) => { if (e.key === 'Enter' && deleteInput === 'DELETE') handleDeleteProductType(); if (e.key === 'Escape') { setDeletePTConfirm(false); setDeleteInput(''); } }} />
+              <div className="permanent-delete-actions">
+                <button className="btn-permanent-confirm" disabled={deleteInput !== 'DELETE'} onClick={handleDeleteProductType}>Delete</button>
+                <button className="btn-cancel" onClick={() => { setDeletePTConfirm(false); setDeleteInput(''); }}>Cancel</button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -719,13 +728,19 @@ function EditFeatureTab({ refreshKey, onChanged }) {
             </div>
           )}
           {deleteComboAllConfirm && (
-            <div className="delete-confirm-bar">
-              <span className="delete-confirm-msg">
-                Delete entire combination <strong>{combination}</strong> for <strong>{productType}</strong>?
-                <br /><small>Combination + related features will move to Trash and can be restored.</small>
-              </span>
-              <button className="btn-yes" onClick={handleDeleteCombination}>Yes, Delete</button>
-              <button className="btn-no" onClick={() => setDeleteComboAllConfirm(false)}>Cancel</button>
+            <div className="permanent-delete-modal" onClick={() => { setDeleteComboAllConfirm(false); setDeleteInput(''); }}>
+              <div className="permanent-delete-card" onClick={e => e.stopPropagation()}>
+                <h4>Delete Combination</h4>
+                <p>You are about to delete the entire combination <strong>&quot;{combination}&quot;</strong> for <strong>{productType}</strong>.</p>
+                <p>The combination and its features move to Trash and can be restored.</p>
+                <p>Type <strong>DELETE</strong> to confirm:</p>
+                <input type="text" value={deleteInput} onChange={e => setDeleteInput(e.target.value)} autoFocus placeholder="Type DELETE"
+                  onKeyDown={(e) => { if (e.key === 'Enter' && deleteInput === 'DELETE') handleDeleteCombination(); if (e.key === 'Escape') { setDeleteComboAllConfirm(false); setDeleteInput(''); } }} />
+                <div className="permanent-delete-actions">
+                  <button className="btn-permanent-confirm" disabled={deleteInput !== 'DELETE'} onClick={handleDeleteCombination}>Delete</button>
+                  <button className="btn-cancel" onClick={() => { setDeleteComboAllConfirm(false); setDeleteInput(''); }}>Cancel</button>
+                </div>
+              </div>
             </div>
           )}
 

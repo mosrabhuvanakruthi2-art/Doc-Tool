@@ -16,6 +16,8 @@ function CompatibilityAdmin({ onChanged }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleteInput, setDeleteInput] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   const [name, setName] = useState('');
   const [columns, setColumns] = useState([]);
@@ -300,6 +302,7 @@ function CompatibilityAdmin({ onChanged }) {
 
   const handleDelete = async () => {
     if (!selectedId) return;
+    setDeleting(true);
     try {
       await fetch(`/api/compatibility/${selectedId}`, { method: 'DELETE' });
       showToast('Matrix deleted.');
@@ -311,7 +314,41 @@ function CompatibilityAdmin({ onChanged }) {
     } catch (err) {
       showToast('Delete failed: ' + err.message, 'error');
     }
-    setDeleteConfirm(false);
+    setDeleteConfirm(false); setDeleteInput(''); setDeleting(false);
+  };
+
+  const closeDeleteModal = () => { setDeleteConfirm(false); setDeleteInput(''); setDeleting(false); };
+
+  // Typed-DELETE confirmation, matching the Documents and Cloud Info tabs.
+  const renderDeleteModal = () => {
+    if (!deleteConfirm) return null;
+    return (
+      <div className="permanent-delete-modal" onClick={closeDeleteModal}>
+        <div className="permanent-delete-card" onClick={e => e.stopPropagation()}>
+          <h4>Delete Compatibility Matrix</h4>
+          <p>You are about to delete <strong>&quot;{name}&quot;</strong>.</p>
+          <p>It moves to Trash and can be restored from there.</p>
+          <p>Type <strong>DELETE</strong> to confirm:</p>
+          <input
+            type="text"
+            value={deleteInput}
+            onChange={e => setDeleteInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && deleteInput === 'DELETE' && !deleting) handleDelete();
+              if (e.key === 'Escape') closeDeleteModal();
+            }}
+            placeholder="Type DELETE"
+            autoFocus
+          />
+          <div className="permanent-delete-actions">
+            <button className="btn-permanent-confirm" disabled={deleteInput !== 'DELETE' || deleting} onClick={handleDelete}>
+              {deleting ? 'Deleting...' : 'Delete'}
+            </button>
+            <button className="btn-cancel" onClick={closeDeleteModal}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -654,21 +691,12 @@ function CompatibilityAdmin({ onChanged }) {
               {saving ? 'Saving...' : mode === 'edit' ? 'Update Matrix' : 'Create Matrix'}
             </button>
             {mode === 'edit' && (
-              <>
-                {deleteConfirm ? (
-                  <div className="delete-confirm">
-                    <span>Delete this matrix?</span>
-                    <button className="btn-yes" onClick={handleDelete}>Yes</button>
-                    <button className="btn-no" onClick={() => setDeleteConfirm(false)}>No</button>
-                  </div>
-                ) : (
-                  <button className="btn-delete" onClick={() => setDeleteConfirm(true)}>Delete Matrix</button>
-                )}
-              </>
+              <button className="btn-delete" onClick={() => { setDeleteInput(''); setDeleteConfirm(true); }}>Delete Matrix</button>
             )}
           </div>
         </div>
       )}
+      {renderDeleteModal()}
     </div>
   );
 }

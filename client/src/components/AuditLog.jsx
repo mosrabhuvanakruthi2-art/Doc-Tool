@@ -90,7 +90,6 @@ function AuditLog() {
   const [options, setOptions] = useState({ actions: [], categories: [], actors: [], total: 0, trackingSince: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [expanded, setExpanded] = useState(null);
 
   const authHeaders = { Authorization: `Bearer ${token}` };
 
@@ -254,14 +253,10 @@ function AuditLog() {
               </thead>
               <tbody>
                 {data.logs.map(log => {
-                  const isOpen = expanded === log.id;
-                  const hasDetails = log.details && Object.keys(log.details).length > 0;
                   return (
-                    <>
                       <tr
                         key={log.id}
-                        className={`audit-row ${log.outcome === 'failure' ? 'audit-row-failure' : ''} ${hasDetails ? 'audit-row-clickable' : ''}`}
-                        onClick={() => hasDetails && setExpanded(isOpen ? null : log.id)}
+                        className={`audit-row ${log.outcome === 'failure' ? 'audit-row-failure' : ''}`}
                       >
                         <td className="audit-col-when">
                           <span className="audit-when">{formatWhen(log.at)}</span>
@@ -287,18 +282,9 @@ function AuditLog() {
                               {log.targetName ? `: ${log.targetName}` : ''}
                             </span>
                           )}
-                          {hasDetails && <span className="audit-more">{isOpen ? 'hide details' : 'show details'}</span>}
                         </td>
                         <td className="audit-col-ip">{log.ip || '—'}</td>
                       </tr>
-                      {isOpen && (
-                        <tr key={`${log.id}-details`} className="audit-details-row">
-                          <td colSpan="5">
-                            <pre className="audit-details">{JSON.stringify(log.details, null, 2)}</pre>
-                          </td>
-                        </tr>
-                      )}
-                    </>
                   );
                 })}
               </tbody>

@@ -12,6 +12,17 @@ const userSchema = new mongoose.Schema({
     cloudInfo: { type: Boolean, default: true },
     documents: { type: Boolean, default: true },
   },
+  // Access is granted per document. Folder grants remain as a shortcut: they
+  // cover every document in that folder and below it, including ones added
+  // later, which saves approving a long list one row at a time.
+  documentAccess: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Document' }],
+    default: [],
+  },
+  documentFolders: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'DocumentFolder' }],
+    default: [],
+  },
   isActive: { type: Boolean, default: true },
   // Everything changed after this instant counts as unread. Set to the moment of
   // creation for new accounts, so nobody starts with a backlog of old edits.

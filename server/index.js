@@ -9,6 +9,27 @@ const mongoose = require('mongoose');
 const dns = require('dns');
 const multer = require('multer');
 const jwt = require('jsonwebtoken');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const net = require('net');
+const createDOMPurify = require('isomorphic-dompurify');
+
+function sanitizeHtml(html) {
+  if (typeof html !== 'string' || !html) return '';
+  return createDOMPurify.sanitize(html, {
+    ALLOWED_TAGS: [
+      'p','br','hr','span','div','strong','b','em','i','u','s','strike','sub','sup',
+      'h1','h2','h3','h4','h5','h6','blockquote','pre','code',
+      'ul','ol','li','a','img','table','thead','tbody','tfoot','tr','th','td','caption','figure','figcaption'],
+    ALLOWED_ATTR: ['href','title','alt','src','width','height','colspan','rowspan','style','class','target','rel'],
+    // Permit inline base64 images (documents embed them) and normal links; block
+    // javascript:, data: on non-images, etc.
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|data:image\/(?:png|jpe?g|gif|webp|bmp);base64,|[^a-z]|\/|#)/i,
+    ADD_ATTR: ['target'],
+    FORBID_TAGS: ['script','style','iframe','object','embed','form','input','svg','math'],
+    FORBID_ATTR: ['onerror','onload','onclick','onmouseover'],
+  });
+}
 
 const Feature = require('./models/Feature');
 const Category = require('./models/Category');
@@ -18,6 +39,7 @@ const CloudInfo = require('./models/CloudInfo');
 const DeletedCombination = require('./models/DeletedCombination');
 const User = require('./models/User');
 const DocModel = require('./models/Document');
+const DocumentFolder = require('./models/DocumentFolder');
 const AccessRequest = require('./models/AccessRequest');
 const Revision = require('./models/Revision');
 const AuditLog = require('./models/AuditLog');
@@ -27,14 +49,59 @@ const { buildFeatureTableDocx } = require('./utils/featureDocx');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const API_BODY_LIMIT = process.env.API_BODY_LIMIT || '200mb';
+const API_BODY_LIMIT = process.env.API_BODY_LIMIT || '50mb';
 const SCREENSHOT_UPLOAD_LIMIT = Number(process.env.SCREENSHOT_UPLOAD_LIMIT || 50);
 const CLOUD_INFO_MAX_PAGES = Number(process.env.CLOUD_INFO_MAX_PAGES || 50);
 const CLOUD_INFO_MAX_IMAGES = Number(process.env.CLOUD_INFO_MAX_IMAGES || 200);
 
-app.use(cors());
+app.disable('x-powered-by');
+
+// Security headers. CSP is scoped to what the app actually loads: its own
+// origin, inline styles/handlers the legacy rich-text editor still emits, and
+// data: images (documents embed base64). Adjust connect-src if the frontend
+// is served from a different origin than the API.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'", 'data:'],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'self'"],
+    },
+  },
+  crossOriginResourcePolicy: { policy: 'same-site' },
+  // The app is same-origin in production (nginx); COEP would block data: images.
+  crossOriginEmbedderPolicy: false,
+}));
+
+// CORS: reflect only known origins instead of a wildcard. Same-origin requests
+// (and server-to-server calls with no Origin) are always allowed; a browser
+// call from an unlisted origin gets no CORS headers and is blocked by the browser.
+const ALLOWED_ORIGINS = String(process.env.FRONTEND_URL || 'http://localhost:4002')
+  .split(',').map(o => o.trim().replace(/\/$/, '')).filter(Boolean);
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin || ALLOWED_ORIGINS.includes(origin.replace(/\/$/, ''))) return cb(null, true);
+    return cb(null, false);
+  },
+}));
+
 app.use(express.json({ limit: API_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: API_BODY_LIMIT }));
+
+// Throttle authentication so passwords and the admin key cannot be brute-forced.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Try again in a few minutes.' },
+});
 
 // --------------- Auth ---------------
 
@@ -50,14 +117,36 @@ function decodeToken(req) {
   try { return jwt.verify(authHeader.split(' ')[1], JWT_SECRET); } catch { return null; }
 }
 
-function requireAdmin(req, res, next) {
+function requireAuth(req, res, next) {
   const decoded = decodeToken(req);
-  if (!decoded || decoded.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+  if (!decoded) return res.status(401).json({ error: 'Authentication required' });
   req.user = decoded;
   next();
 }
 
-app.post('/api/auth/login', async (req, res) => {
+// Authorization for content editing. The token proves identity, but the role is
+// re-read from the database so a promotion or demotion takes effect on the next
+// request rather than whenever the 8-hour token happens to expire. The
+// environment admin has no DB row and is trusted from the token.
+async function requireAdmin(req, res, next) {
+  const decoded = decodeToken(req);
+  if (!decoded) return res.status(401).json({ error: 'Authentication required' });
+  const email = String(decoded.email || '').toLowerCase().trim();
+  const isEnvAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase().trim();
+  if (isEnvAdmin) { req.user = decoded; return next(); }
+  try {
+    const user = await User.findOne({ email }).select('role isActive').lean();
+    if (!user || user.isActive === false || user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+  } catch (_) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  req.user = decoded;
+  next();
+}
+
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
@@ -144,7 +233,7 @@ app.get('/api/auth/verify', async (req, res) => {
   res.json({ success: true, user: { email: decoded.email, name: decoded.name || '', role: decoded.role, permissions: perms } });
 });
 
-app.post('/api/admin/login', async (req, res) => {
+app.post('/api/admin/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   const attempted = String(email || '').toLowerCase().trim();
   if (attempted === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
@@ -175,10 +264,8 @@ app.post('/api/admin/login', async (req, res) => {
   res.status(401).json({ error: 'Invalid email or password' });
 });
 
-app.get('/api/admin/verify', (req, res) => {
-  const decoded = decodeToken(req);
-  if (!decoded) return res.status(401).json({ error: 'Invalid or expired token' });
-  res.json({ success: true, email: decoded.email });
+app.get('/api/admin/verify', requireAdmin, (req, res) => {
+  res.json({ success: true, email: req.user.email });
 });
 
 function graphRequest(accessToken) {
@@ -223,7 +310,7 @@ function httpsPost(hostname, path, body) {
   });
 }
 
-app.post('/api/auth/microsoft/exchange', async (req, res) => {
+app.post('/api/auth/microsoft/exchange', authLimiter, async (req, res) => {
   const { code, verifier, redirectUri } = req.body;
   if (!code || !verifier || !redirectUri) return res.status(400).json({ error: 'code, verifier and redirectUri are required' });
 
@@ -300,7 +387,7 @@ app.post('/api/auth/microsoft/exchange', async (req, res) => {
   }
 });
 
-app.post('/api/auth/microsoft', async (req, res) => {
+app.post('/api/auth/microsoft', authLimiter, async (req, res) => {
   const { accessToken } = req.body;
   if (!accessToken) return res.status(400).json({ error: 'Access token required' });
 
@@ -420,7 +507,7 @@ async function sendMail(to, subject, htmlBody) {
 
 // --------------- Access Requests ---------------
 
-app.post('/api/access-requests', async (req, res) => {
+app.post('/api/access-requests', requireAuth, async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     let email = '', name = '';
@@ -433,24 +520,121 @@ app.post('/api/access-requests', async (req, res) => {
     }
     if (!email) return res.status(401).json({ error: 'Authentication required' });
 
-    const existing = await AccessRequest.findOne({ email }).sort({ requestedAt: -1 });
+    // Documents are asked for by id, one or many at a time. A folder id asks for
+    // a whole folder, and a body with neither is a legacy whole-section request.
+    const body = req.body || {};
+    const wanted = [
+      ...(Array.isArray(body.documentIds) ? body.documentIds : []),
+      ...(body.documentId ? [body.documentId] : []),
+    ].map(String);
+    const documentIds = [...new Set(wanted)];
+    const folderId = body.folderId ? String(body.folderId) : null;
+
+    // ---- a request for one or more documents ----
+    if (documentIds.length) {
+      const docs = await DocModel.find({ _id: { $in: documentIds }, isDeleted: { $ne: true } })
+        .select('name folderId').lean();
+      if (!docs.length) return res.status(404).json({ error: 'No such document' });
+
+      const folders = await liveFolders();
+      const access = await grantsFor(req);
+
+      const created = [];
+      const alreadyPending = [];
+      const alreadyOpen = [];
+
+      for (const doc of docs) {
+        if (canOpenDocument(access, folders, doc)) { alreadyOpen.push(doc.name); continue; }
+
+        const existing = await AccessRequest
+          .findOne({ email, documentId: doc._id })
+          .sort({ requestedAt: -1 });
+
+        if (existing && existing.status === 'pending') { alreadyPending.push(doc.name); continue; }
+
+        if (existing) {
+          // Denied or revoked before: reopen that record rather than pile up duplicates.
+          existing.status = 'pending';
+          existing.requestedAt = new Date();
+          existing.respondedAt = undefined;
+          existing.documentName = doc.name;
+          existing.folderId = doc.folderId || null;
+          existing.folderName = folderPath(folders, doc.folderId);
+          await existing.save();
+          created.push({ id: existing._id, name: doc.name });
+        } else {
+          const made = await AccessRequest.create({
+            email, name,
+            documentId: doc._id,
+            documentName: doc.name,
+            folderId: doc.folderId || null,
+            folderName: folderPath(folders, doc.folderId),
+          });
+          created.push({ id: made._id, name: doc.name });
+        }
+      }
+
+      if (!created.length) {
+        const why = alreadyPending.length
+          ? `You already have a pending request for ${alreadyPending.join(', ')}`
+          : `You already have access to ${alreadyOpen.join(', ')}`;
+        return res.status(400).json({ error: why, alreadyPending, alreadyOpen });
+      }
+
+      // One email for the whole batch rather than one per document.
+      const list = created.map(c => `<li>${c.name}</li>`).join('');
+      await sendMail(
+        ADMIN_EMAIL,
+        `Document Access Request from ${name || email}`,
+        `<p><strong>${name || email}</strong> (${email}) has requested access to ${created.length} document(s) on Migration Docs:</p>
+         <ul>${list}</ul>
+         <p>Log in to the <a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}/admin?tab=users">Admin Panel → Users</a> to approve or deny.</p>`
+      );
+
+      // One audit entry naming every document, so the batch reads as one action.
+      await audit(req, {
+        action: 'access_request.created', category: 'access',
+        actorEmail: email, actorName: name || '', actorRole: 'viewer',
+        targetType: 'accessRequest', targetId: created[0].id, targetName: email,
+        summary: `${name || email} requested access to ${created.length} document(s): ${created.map(c => c.name).join(', ')}`,
+        details: { documents: created.map(c => c.name), skippedPending: alreadyPending, skippedOpen: alreadyOpen },
+      });
+
+      return res.json({
+        success: true,
+        requested: created.length,
+        documents: created.map(c => c.name),
+        alreadyPending,
+        alreadyOpen,
+      });
+    }
+
+    // ---- a whole folder, or the legacy whole-section request ----
+    let folderName = '';
+    if (folderId) {
+      const folder = await DocumentFolder.findOne({ _id: folderId, isDeleted: { $ne: true } }).lean();
+      if (!folder) return res.status(404).json({ error: 'Folder not found' });
+      folderName = folder.name;
+    }
+    const place = folderName ? `the "${folderName}" folder` : 'the Documents tab';
+
+    const existing = await AccessRequest.findOne({ email, documentId: null, folderId: folderId || null }).sort({ requestedAt: -1 });
     if (existing) {
-      if (existing.status === 'pending') return res.status(400).json({ error: 'You already have a pending access request' });
-      if (existing.status === 'approved') return res.status(400).json({ error: 'You already have access to the Documents tab' });
-      // denied or revoked — reset the existing record to pending instead of creating a duplicate
+      if (existing.status === 'pending') return res.status(400).json({ error: `You already have a pending request for ${place}` });
+      if (existing.status === 'approved') return res.status(400).json({ error: `You already have access to ${place}` });
       existing.status = 'pending';
       existing.requestedAt = new Date();
       existing.respondedAt = undefined;
+      existing.folderName = folderName;
       await existing.save();
     }
 
-    const request = existing || await AccessRequest.create({ email, name });
+    const request = existing || await AccessRequest.create({ email, name, folderId: folderId || null, folderName });
 
-    // Notify admin via email
     await sendMail(
       ADMIN_EMAIL,
       `Documents Access Request from ${name || email}`,
-      `<p><strong>${name || email}</strong> (${email}) has requested access to the <strong>Documents</strong> tab on Migration Docs.</p>
+      `<p><strong>${name || email}</strong> (${email}) has requested access to <strong>${folderName || 'the Documents tab'}</strong> on Migration Docs.</p>
        <p>Log in to the <a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}/admin?tab=users">Admin Panel → Users</a> to approve or deny this request.</p>`
     );
 
@@ -458,7 +642,8 @@ app.post('/api/access-requests', async (req, res) => {
       action: 'access_request.created', category: 'access',
       actorEmail: email, actorName: name || '', actorRole: 'viewer',
       targetType: 'accessRequest', targetId: request._id, targetName: email,
-      summary: `${name || email} requested access to the Documents tab`,
+      summary: `${name || email} requested access to ${place}`,
+      details: { folder: folderName || null },
     });
     res.json({ success: true, requestId: request._id });
   } catch (err) {
@@ -466,10 +651,43 @@ app.post('/api/access-requests', async (req, res) => {
   }
 });
 
+// What the signed-in reader has asked for so far. Drives the state of each
+// folder's request button without exposing anybody else's requests.
+app.get('/api/access-requests/mine', async (req, res) => {
+  try {
+    const decoded = decodeToken(req);
+    if (!decoded || !decoded.email) return res.json({ requests: [] });
+    const requests = await AccessRequest
+      .find({ email: String(decoded.email).toLowerCase().trim() })
+      .select('documentId documentName folderId folderName status requestedAt respondedAt')
+      .sort({ requestedAt: -1 })
+      .lean();
+    res.json({
+      requests: requests.map((r) => ({
+        documentId: r.documentId ? r.documentId.toString() : null,
+        documentName: r.documentName || '',
+        folderId: r.folderId ? r.folderId.toString() : null,
+        folderName: r.folderName || '',
+        status: r.status,
+        requestedAt: r.requestedAt,
+        respondedAt: r.respondedAt || null,
+      })),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/access-requests', requireAdmin, async (req, res) => {
   try {
     const requests = await AccessRequest.find().sort({ requestedAt: -1 }).lean();
-    res.json({ requests });
+    res.json({
+      requests: requests.map((r) => ({
+        ...r,
+        documentId: r.documentId ? r.documentId.toString() : null,
+        documentName: r.documentName || '',
+        folderId: r.folderId ? r.folderId.toString() : null,
+        folderName: r.folderName || '',
+      })),
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -482,10 +700,29 @@ app.put('/api/access-requests/:id/approve', requireAdmin, async (req, res) => {
     request.respondedAt = new Date();
     await request.save();
 
-    // Update user permissions in DB (create if missing — safety net)
+    // A document request grants that document; a folder request grants the
+    // folder and everything under it; a legacy request with neither still
+    // grants the section as a whole. Each grants only its own kind, so approve
+    // and revoke stay symmetrical.
+    const docTarget = request.documentId ? String(request.documentId) : '';
+    const folderTarget = request.folderId && !docTarget ? String(request.folderId) : '';
+    const label = request.documentName
+      || request.folderName
+      || (folderTarget ? 'a document folder' : 'the Documents tab');
+
     const user = await User.findOne({ email: request.email });
     if (user) {
-      user.permissions = { ...user.permissions, documents: true };
+      if (docTarget) {
+        if (!(user.documentAccess || []).map(String).includes(docTarget)) {
+          user.documentAccess = [...(user.documentAccess || []), request.documentId];
+        }
+      } else if (folderTarget) {
+        if (!(user.documentFolders || []).map(String).includes(folderTarget)) {
+          user.documentFolders = [...(user.documentFolders || []), request.folderId];
+        }
+      } else {
+        user.permissions = { ...user.permissions, documents: true };
+      }
       await user.save();
     } else {
       await User.create({
@@ -493,6 +730,8 @@ app.put('/api/access-requests/:id/approve', requireAdmin, async (req, res) => {
         name: request.name || '',
         role: 'viewer',
         permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true },
+        documentAccess: docTarget ? [request.documentId] : [],
+        documentFolders: folderTarget ? [request.folderId] : [],
         password: crypto.randomBytes(32).toString('hex'),
         isActive: true,
         notificationsSeenAt: new Date(),
@@ -502,17 +741,20 @@ app.put('/api/access-requests/:id/approve', requireAdmin, async (req, res) => {
     // Notify user
     await sendMail(
       request.email,
-      'Documents Access Approved – Migration Docs',
+      `Access Approved: ${label} – Migration Docs`,
       `<p>Hi ${request.name || request.email},</p>
-       <p>Your request to access the <strong>Documents</strong> tab on Migration Docs has been <strong>approved</strong>.</p>
+       <p>Your request to access <strong>${label}</strong> on Migration Docs has been <strong>approved</strong>.</p>
        <p><a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}">Click here to access Migration Docs</a></p>`
     );
 
     await audit(req, {
       action: 'access_request.approved', category: 'access',
       targetType: 'accessRequest', targetId: request._id, targetName: request.email,
-      summary: `Admin granted Documents access to ${request.email}`,
-      details: { requestEmail: request.email, requestName: request.name || null },
+      summary: `Admin granted access to ${docTarget ? 'document ' : ''}"${label}" for ${request.email}`,
+      details: {
+        requestEmail: request.email, requestName: request.name || null,
+        document: request.documentName || null, folder: request.folderName || null,
+      },
     });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -527,19 +769,20 @@ app.put('/api/access-requests/:id/deny', requireAdmin, async (req, res) => {
     request.respondedAt = new Date();
     await request.save();
 
+    const deniedLabel = request.documentName || request.folderName || 'the Documents tab';
     await sendMail(
       request.email,
-      'Documents Access Denied – Migration Docs',
+      `Access Denied: ${deniedLabel} – Migration Docs`,
       `<p>Hi ${request.name || request.email},</p>
-       <p>Your request to access the <strong>Documents</strong> tab on Migration Docs has been <strong>denied</strong>.</p>
+       <p>Your request to access <strong>${deniedLabel}</strong> on Migration Docs has been <strong>denied</strong>.</p>
        <p>If you believe this is a mistake, please contact your administrator.</p>`
     );
 
     await audit(req, {
       action: 'access_request.denied', category: 'access',
       targetType: 'accessRequest', targetId: request._id, targetName: request.email,
-      summary: `Admin denied the Documents access request from ${request.email}`,
-      details: { requestEmail: request.email, requestName: request.name || null },
+      summary: `Admin denied the request from ${request.email} for ${deniedLabel}`,
+      details: { requestEmail: request.email, requestName: request.name || null, folder: request.folderName || null },
     });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -555,17 +798,29 @@ app.put('/api/access-requests/:id/revoke', requireAdmin, async (req, res) => {
     request.respondedAt = new Date();
     await request.save();
 
+    const revokedLabel = request.documentName || request.folderName || 'the Documents tab';
     const user = await User.findOne({ email: request.email });
     if (user) {
-      user.permissions = { ...user.permissions, documents: false };
+      if (request.documentId) {
+        user.documentAccess = (user.documentAccess || [])
+          .filter((id) => String(id) !== String(request.documentId));
+      } else if (request.folderId) {
+        user.documentFolders = (user.documentFolders || [])
+          .filter((id) => String(id) !== String(request.folderId));
+      } else {
+        user.permissions = { ...user.permissions, documents: false };
+      }
       await user.save();
     }
 
     await audit(req, {
       action: 'access_request.revoked', category: 'access',
       targetType: 'accessRequest', targetId: request._id, targetName: request.email,
-      summary: `Admin revoked Documents access for ${request.email}`,
-      details: { requestEmail: request.email, requestName: request.name || null },
+      summary: `Admin revoked access to "${revokedLabel}" for ${request.email}`,
+      details: {
+        requestEmail: request.email, requestName: request.name || null,
+        document: request.documentName || null, folder: request.folderName || null,
+      },
     });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -608,7 +863,7 @@ app.post('/api/users', requireAdmin, async (req, res) => {
 
 app.put('/api/users/:id', requireAdmin, async (req, res) => {
   try {
-    const { name, role, permissions, password, isActive } = req.body;
+    const { name, role, permissions, password, isActive, documentFolders, documentAccess } = req.body;
     const update = {};
     if (name !== undefined) update.name = name;
     if (role !== undefined) update.role = role;
@@ -617,6 +872,43 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
 
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Folder grants are spelled out separately so the audit entry can name the
+    // folders that were opened up or taken away, not just say "permissions".
+    let folderNote = '';
+    if (Array.isArray(documentFolders)) {
+      const folders = await liveFolders();
+      const nameOf = (id) => {
+        const f = folders.find((x) => x._id.toString() === String(id));
+        return f ? f.name : String(id);
+      };
+      const before = (user.documentFolders || []).map(String);
+      const after = documentFolders.filter((id) => folders.some((f) => f._id.toString() === String(id))).map(String);
+      const added = after.filter((id) => !before.includes(id)).map(nameOf);
+      const removed = before.filter((id) => !after.includes(id)).map(nameOf);
+      user.documentFolders = after;
+      update.documentFolders = after;
+      if (added.length) folderNote += ` — granted ${added.join(', ')}`;
+      if (removed.length) folderNote += ` — revoked ${removed.join(', ')}`;
+    }
+
+    // Document grants, like folder grants, are spelled out so the audit entry can
+    // name what was opened up or taken away.
+    if (Array.isArray(documentAccess)) {
+      const docs = await DocModel.find({ _id: { $in: documentAccess }, isDeleted: { $ne: true } }).select('name').lean();
+      const valid = docs.map(d => d._id.toString());
+      const nameOf = (id) => { const d = docs.find(x => x._id.toString() === String(id)); return d ? d.name : String(id); };
+      const before = (user.documentAccess || []).map(String);
+      const added = valid.filter(id => !before.includes(id)).map(nameOf);
+      const removed = before.filter(id => !valid.includes(id));
+      const removedNames = removed.length
+        ? (await DocModel.find({ _id: { $in: removed } }).select('name').lean()).map(d => d.name)
+        : [];
+      user.documentAccess = valid;
+      update.documentAccess = valid;
+      if (added.length) folderNote += ` — granted document(s) ${added.join(', ')}`;
+      if (removedNames.length) folderNote += ` — revoked document(s) ${removedNames.join(', ')}`;
+    }
 
     Object.assign(user, update);
     if (password) user.password = password;
@@ -627,7 +919,7 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
     await audit(req, {
       action: 'user.updated', category: 'user',
       targetType: 'user', targetId: user._id, targetName: user.email,
-      summary: `Updated account ${user.email}` + (Object.keys(update).length ? ` — ${Object.keys(update).join(", ")}` : "") + (password ? " — password reset" : ""),
+      summary: `Updated account ${user.email}` + (Object.keys(update).length ? ` — ${Object.keys(update).join(", ")}` : "") + (password ? " — password reset" : "") + folderNote,
       details: { changed: Object.keys(update), passwordChanged: !!password, role: user.role, isActive: user.isActive },
     });
     res.json({ success: true, user: { ...obj, id: obj._id.toString() } });
@@ -717,7 +1009,13 @@ const screenshotsDir = path.join(assetsDir, 'screenshots');
 [assetsDir, screenshotsDir].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
-app.use('/assets', express.static(assetsDir));
+const staticNoSniff = express.static(assetsDir, {
+  setHeaders: (res) => {
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+  },
+});
+app.use('/assets', staticNoSniff);
 
 let upload;
 
@@ -768,11 +1066,15 @@ const localStorage = multer.diskStorage({
   },
 });
 
+const RASTER_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp'];
 upload = multer({
   storage: localStorage,
+  limits: { fileSize: 15 * 1024 * 1024, files: SCREENSHOT_UPLOAD_LIMIT },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) cb(null, true);
-    else cb(new Error('Only image files allowed'));
+    // Allowlist raster types only. SVG is an image type but can carry script,
+    // so it is refused rather than served from our origin.
+    if (RASTER_IMAGE_TYPES.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Only PNG, JPEG, GIF, WEBP or BMP images are allowed'));
   },
 });
 console.log('Using local disk for image storage (organized by productType/combination)');
@@ -839,7 +1141,7 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-app.post('/api/categories', async (req, res) => {
+app.post('/api/categories', requireAdmin, async (req, res) => {
   try {
     const { group, name, slug } = req.body;
     if (!group || !name || !slug) {
@@ -878,7 +1180,7 @@ app.get('/api/product-config', async (req, res) => {
   }
 });
 
-app.post('/api/product-config', async (req, res) => {
+app.post('/api/product-config', requireAdmin, async (req, res) => {
   try {
     const { name, combinations, featureListUrl } = req.body;
     if (!name) return res.status(400).json({ error: 'Product type name is required' });
@@ -894,7 +1196,7 @@ app.post('/api/product-config', async (req, res) => {
   }
 });
 
-app.put('/api/product-config/reorder', async (req, res) => {
+app.put('/api/product-config/reorder', requireAdmin, async (req, res) => {
   try {
     const { orderedIds } = req.body;
     if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
@@ -914,7 +1216,7 @@ app.put('/api/product-config/reorder', async (req, res) => {
   }
 });
 
-app.put('/api/product-config/:id', async (req, res) => {
+app.put('/api/product-config/:id', requireAdmin, async (req, res) => {
   try {
     const { name, combinations, featureListUrl } = req.body;
     const update = {};
@@ -931,7 +1233,7 @@ app.put('/api/product-config/:id', async (req, res) => {
   }
 });
 
-app.put('/api/product-config/:id/reorder-combinations', async (req, res) => {
+app.put('/api/product-config/:id/reorder-combinations', requireAdmin, async (req, res) => {
   try {
     const { combinations } = req.body;
     if (!Array.isArray(combinations)) return res.status(400).json({ error: 'combinations array required' });
@@ -951,7 +1253,7 @@ app.put('/api/product-config/:id/reorder-combinations', async (req, res) => {
   }
 });
 
-app.post('/api/product-config/:id/combinations', async (req, res) => {
+app.post('/api/product-config/:id/combinations', requireAdmin, async (req, res) => {
   try {
     const { combination } = req.body;
     if (!combination) return res.status(400).json({ error: 'Combination name is required' });
@@ -968,7 +1270,7 @@ app.post('/api/product-config/:id/combinations', async (req, res) => {
   }
 });
 
-app.delete('/api/product-config/:id', async (req, res) => {
+app.delete('/api/product-config/:id', requireAdmin, async (req, res) => {
   try {
     const config = await ProductConfig.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!config) return res.status(404).json({ error: 'Not found' });
@@ -984,7 +1286,7 @@ app.delete('/api/product-config/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/product-config/:id/combinations/:combo', async (req, res) => {
+app.delete('/api/product-config/:id/combinations/:combo', requireAdmin, async (req, res) => {
   try {
     const combo = decodeURIComponent(req.params.combo);
     const config = await ProductConfig.findById(req.params.id);
@@ -999,7 +1301,7 @@ app.delete('/api/product-config/:id/combinations/:combo', async (req, res) => {
   }
 });
 
-app.delete(['/api/product-types/combination', '/product-types/combination'], async (req, res) => {
+app.delete(['/api/product-types/combination', '/product-types/combination'], requireAdmin, async (req, res) => {
   try {
     const combination = resolveCombinationFromPayload(req.body);
     const productType = normalizeCombinationName(req.body.productType);
@@ -1069,7 +1371,7 @@ app.delete(['/api/product-types/combination', '/product-types/combination'], asy
   }
 });
 
-app.put(['/api/product-types/combination/rename', '/product-types/combination/rename'], async (req, res) => {
+app.put(['/api/product-types/combination/rename', '/product-types/combination/rename'], requireAdmin, async (req, res) => {
   try {
     const oldName = normalizeCombinationName(req.body.oldName);
     const newName = normalizeCombinationName(req.body.newName);
@@ -1119,7 +1421,7 @@ app.put(['/api/product-types/combination/rename', '/product-types/combination/re
   }
 });
 
-app.delete('/api/features/by-scope', async (req, res) => {
+app.delete('/api/features/by-scope', requireAdmin, async (req, res) => {
   try {
     const { productType, scope, combination } = req.query;
     if (!productType || !scope) return res.status(400).json({ error: 'productType and scope are required' });
@@ -1260,7 +1562,7 @@ app.get('/api/features', async (req, res) => {
   }
 });
 
-app.post('/api/features', async (req, res) => {
+app.post('/api/features', requireAdmin, async (req, res) => {
   try {
     const { categorySlug, productType, scope, combination, name, description, family, screenshots } = req.body;
     const pt = productType || categorySlug;
@@ -1299,7 +1601,7 @@ app.post('/api/features', async (req, res) => {
   }
 });
 
-app.post('/api/features/bulk', async (req, res) => {
+app.post('/api/features/bulk', requireAdmin, async (req, res) => {
   try {
     const { features: featureList } = req.body;
     if (!Array.isArray(featureList) || featureList.length === 0) {
@@ -1373,7 +1675,7 @@ app.post('/api/features/bulk', async (req, res) => {
   }
 });
 
-app.put('/api/features/rename-family', async (req, res) => {
+app.put('/api/features/rename-family', requireAdmin, async (req, res) => {
   try {
     const { productType, scope, combination, oldFamily, newFamily } = req.body;
     if (!productType || !scope || !oldFamily || !newFamily) {
@@ -1395,7 +1697,7 @@ app.put('/api/features/rename-family', async (req, res) => {
   }
 });
 
-app.put('/api/features/reorder', async (req, res) => {
+app.put('/api/features/reorder', requireAdmin, async (req, res) => {
   try {
     const { orderedIds } = req.body;
     if (!Array.isArray(orderedIds)) {
@@ -1420,7 +1722,7 @@ app.put('/api/features/reorder', async (req, res) => {
   }
 });
 
-app.put('/api/features/:id', async (req, res) => {
+app.put('/api/features/:id', requireAdmin, async (req, res) => {
   try {
     const before = await Feature.findById(req.params.id).lean();
     const feature = await Feature.findByIdAndUpdate(
@@ -1436,7 +1738,7 @@ app.put('/api/features/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/features/:id', async (req, res) => {
+app.delete('/api/features/:id', requireAdmin, async (req, res) => {
   try {
     const feature = await Feature.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!feature) return res.status(404).json({ error: 'Feature not found' });
@@ -1733,7 +2035,7 @@ const DOWNLOAD_KINDS = {
 };
 const DOWNLOAD_FORMATS = ['docx', 'xlsx', 'pdf'];
 
-app.post('/api/audit/download', async (req, res) => {
+app.post('/api/audit/download', requireAuth, async (req, res) => {
   try {
     const { kind, format, productType, combination, scope, name } = req.body || {};
     if (!DOWNLOAD_KINDS[kind] || !DOWNLOAD_FORMATS.includes(format)) {
@@ -1761,7 +2063,7 @@ app.post('/api/audit/download', async (req, res) => {
 // Signing out happens in the browser (the token is simply discarded), so there is
 // no request to record unless the client says so. Called before the token is
 // cleared, which is what identifies who left.
-app.post('/api/audit/logout', async (req, res) => {
+app.post('/api/audit/logout', requireAuth, async (req, res) => {
   try {
     const decoded = decodeToken(req);
     if (!decoded) return res.json({ success: true, recorded: false });
@@ -1990,11 +2292,34 @@ app.get('/api/notifications', async (req, res) => {
     [...sinceSeen, ...recent].forEach(r => merged.set(String(r._id), r));
     const revisions = [...merged.values()].sort((a, b) => new Date(b.changedAt) - new Date(a.changedAt));
 
+    // A document this reader has not been granted must not announce itself, so
+    // notifications answer to the same per-document rule as the pages.
+    const notifyAccess = await grantsFor(req);
+    let readableDocIds = null; // null = no restriction (admins)
+    if (!notifyAccess.admin) {
+      const docIds = [...new Set(revisions.filter(r => r.entityType === 'document').map(r => String(r.entityId)))];
+      if (docIds.length) {
+        const [folderList, docs] = await Promise.all([
+          liveFolders(),
+          DocModel.find({ _id: { $in: docIds } }).select('folderId').lean(),
+        ]);
+        readableDocIds = new Set(
+          docs.filter(d => canOpenDocument(notifyAccess, folderList, d)).map(d => String(d._id))
+        );
+      } else {
+        readableDocIds = new Set();
+      }
+    }
+
     // Only changes to tabs this user is allowed to see. An absent flag counts as
     // allowed, matching how the sidebar decides what to show.
     const visible = revisions.filter((revision) => {
       const key = NOTIFY_PERMISSION[revision.entityType];
-      return key && permissions[key] !== false;
+      if (!key || permissions[key] === false) return false;
+      if (revision.entityType === 'document' && readableDocIds) {
+        return readableDocIds.has(String(revision.entityId));
+      }
+      return true;
     });
 
     // Feature rows carry no location of their own, so fetch the page each belongs to.
@@ -2144,7 +2469,7 @@ app.get('/api/notifications', async (req, res) => {
 });
 
 // Dismiss one notification — opening it clears just that entry.
-app.post('/api/notifications/read', async (req, res) => {
+app.post('/api/notifications/read', requireAuth, async (req, res) => {
   try {
     const account = await resolveNotificationUser(req);
     if (!account) return res.status(401).json({ error: 'Invalid or expired token' });
@@ -2179,7 +2504,7 @@ app.post('/api/notifications/read', async (req, res) => {
 });
 
 // Mark everything read.
-app.post('/api/notifications/read-all', async (req, res) => {
+app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
   try {
     const account = await resolveNotificationUser(req);
     if (!account) return res.status(401).json({ error: 'Invalid or expired token' });
@@ -2196,7 +2521,7 @@ app.post('/api/notifications/read-all', async (req, res) => {
 
 // Full version history for every feature row on one page (product / combination /
 // scope). Each row reports one chain per field: created -> updated to -> current.
-app.get('/api/feature-history', async (req, res) => {
+app.get('/api/feature-history', requireAuth, async (req, res) => {
   try {
     const { productType, combination, scope } = req.query;
     const filter = {};
@@ -2244,7 +2569,7 @@ app.get('/api/feature-history', async (req, res) => {
 });
 
 // Same chain view for a single record (a matrix, cloud info page or document).
-app.get('/api/history/:entityType/:entityId', async (req, res) => {
+app.get('/api/history/:entityType/:entityId', requireAuth, async (req, res) => {
   try {
     const { entityType, entityId } = req.params;
     if (!mongoose.isValidObjectId(entityId)) return res.status(400).json({ error: 'Invalid id' });
@@ -2260,6 +2585,15 @@ app.get('/api/history/:entityType/:entityId', async (req, res) => {
     if (!Model) return res.status(400).json({ error: 'Unknown entity type' });
 
     const liveDoc = await Model.findById(entityId).lean();
+
+    // A document's history exposes its content, so it answers to the same
+    // per-document access as the document itself.
+    if (entityType === 'document' && liveDoc) {
+      const access = await grantsFor(req);
+      if (!access.admin && !canOpenDocument(access, await liveFolders(), liveDoc)) {
+        return res.status(403).json({ error: 'You do not have access to this document' });
+      }
+    }
     const revisions = await Revision.find({ entityType, entityId }).sort({ changedAt: 1 }).lean();
     const fields = buildFieldChains(entityType, revisions, liveDoc);
     const lastChange = revisions.length ? revisions[revisions.length - 1] : null;
@@ -2377,7 +2711,7 @@ async function recordLifecycle(entityType, doc, action, req) {
 }
 
 // Latest revisions for one record, newest first.
-app.get('/api/revisions/:entityType/:entityId', async (req, res) => {
+app.get('/api/revisions/:entityType/:entityId', requireAuth, async (req, res) => {
   try {
     const { entityType, entityId } = req.params;
     if (!mongoose.isValidObjectId(entityId)) return res.status(400).json({ error: 'Invalid id' });
@@ -2394,7 +2728,7 @@ app.get('/api/revisions/:entityType/:entityId', async (req, res) => {
 
 // --------------- Screenshot Upload ---------------
 
-app.post('/api/screenshots', (req, res) => {
+app.post('/api/screenshots', requireAdmin, (req, res) => {
   upload.array('screenshots', SCREENSHOT_UPLOAD_LIMIT)(req, res, (err) => {
     if (err) {
       if (err instanceof multer.MulterError && err.code === 'LIMIT_UNEXPECTED_FILE') {
@@ -2458,7 +2792,7 @@ app.get('/api/compatibility/:slug', async (req, res) => {
   }
 });
 
-app.post('/api/compatibility', async (req, res) => {
+app.post('/api/compatibility', requireAdmin, async (req, res) => {
   try {
     const { name, columns, rows, notes } = req.body;
     if (!name || !columns || !rows) {
@@ -2478,7 +2812,7 @@ app.post('/api/compatibility', async (req, res) => {
 });
 
 // Must be registered before PUT /api/compatibility/:id so "reorder" is not captured as an id.
-app.put('/api/compatibility/reorder', async (req, res) => {
+app.put('/api/compatibility/reorder', requireAdmin, async (req, res) => {
   try {
     const { orderedIds } = req.body;
     if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
@@ -2498,7 +2832,7 @@ app.put('/api/compatibility/reorder', async (req, res) => {
   }
 });
 
-app.put('/api/compatibility/:id', async (req, res) => {
+app.put('/api/compatibility/:id', requireAdmin, async (req, res) => {
   try {
     const { name, columns, rows, notes } = req.body;
     const update = {};
@@ -2521,7 +2855,7 @@ app.put('/api/compatibility/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/compatibility/:id', async (req, res) => {
+app.delete('/api/compatibility/:id', requireAdmin, async (req, res) => {
   try {
     const matrix = await CompatibilityMatrix.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!matrix) return res.status(404).json({ error: 'Matrix not found' });
@@ -2540,7 +2874,12 @@ function slugifyCloudInfo(text) {
 
 app.get('/api/cloud-info', async (req, res) => {
   try {
-    const items = await CloudInfo.find({ isDeleted: { $ne: true } }).sort({ order: 1, createdAt: 1 }).lean();
+    // Names and ordering only. `content` carries inline base64 images (megabytes
+    // per row); the list is used to build menus and counts, and the full body is
+    // fetched by /api/cloud-info/:slug when a page is actually opened.
+    const items = await CloudInfo.find({ isDeleted: { $ne: true } })
+      .select('name slug order')
+      .sort({ order: 1, createdAt: 1 }).lean();
     res.json({ items: items.map(i => ({ ...i, id: i._id.toString() })) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2557,7 +2896,7 @@ app.get('/api/cloud-info/:slug', async (req, res) => {
   }
 });
 
-app.post('/api/cloud-info', async (req, res) => {
+app.post('/api/cloud-info', requireAdmin, async (req, res) => {
   try {
     const { name, content } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
@@ -2569,7 +2908,7 @@ app.post('/api/cloud-info', async (req, res) => {
     const existing = await CloudInfo.findOne({ slug }).lean();
     if (existing) slug = slug + '-' + Date.now();
     const count = await CloudInfo.countDocuments();
-    const item = await CloudInfo.create({ name, slug, content: content || '', order: count });
+    const item = await CloudInfo.create({ name, slug, content: sanitizeHtml(content || ''), order: count });
     await recordLifecycle('cloudInfo', item.toObject(), 'created', req);
     res.json({
       success: true,
@@ -2581,7 +2920,7 @@ app.post('/api/cloud-info', async (req, res) => {
   }
 });
 
-app.put('/api/cloud-info/:id', async (req, res) => {
+app.put('/api/cloud-info/:id', requireAdmin, async (req, res) => {
   try {
     const { name, content } = req.body;
     const update = {};
@@ -2597,7 +2936,7 @@ app.put('/api/cloud-info/:id', async (req, res) => {
       if (!validation.ok) {
         return res.status(400).json({ error: validation.message, stats: validation.stats });
       }
-      update.content = content;
+      update.content = sanitizeHtml(content || '');
       contentStats = validation.stats;
     }
     const before = await CloudInfo.findById(req.params.id).lean();
@@ -2614,7 +2953,7 @@ app.put('/api/cloud-info/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/cloud-info/:id', async (req, res) => {
+app.delete('/api/cloud-info/:id', requireAdmin, async (req, res) => {
   try {
     const item = await CloudInfo.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
     if (!item) return res.status(404).json({ error: 'Not found' });
@@ -2625,7 +2964,7 @@ app.delete('/api/cloud-info/:id', async (req, res) => {
   }
 });
 
-app.put('/api/cloud-info-reorder', async (req, res) => {
+app.put('/api/cloud-info-reorder', requireAdmin, async (req, res) => {
   try {
     const { orderedIds } = req.body;
     if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
@@ -2653,8 +2992,27 @@ function slugifyDocument(text) {
 
 app.get('/api/documents', async (req, res) => {
   try {
-    const items = await DocModel.find({ isDeleted: { $ne: true } }).sort({ order: 1, createdAt: 1 }).lean();
-    res.json({ items: items.map(i => ({ ...i, id: i._id.toString() })) });
+    // No `content` in the list: it holds inline base64 images and the tree only
+    // needs names, folders, type and lock state. The body comes from
+    // /api/documents/:slug when the document is opened (and is access-checked there).
+    const items = await DocModel.find({ isDeleted: { $ne: true } })
+      .select('name slug fileType fileUrl folderId order createdAt')
+      .sort({ order: 1, createdAt: 1 }).lean();
+    const access = await grantsFor(req);
+    const folders = access.admin ? [] : await liveFolders();
+
+    res.json({
+      items: items.map((i) => {
+        const open = canOpenDocument(access, folders, i);
+        // A locked row keeps its name but not its download link.
+        return {
+          ...i,
+          id: i._id.toString(),
+          locked: !open,
+          fileUrl: open ? i.fileUrl : '',
+        };
+      }),
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -2662,11 +3020,26 @@ app.get('/api/documents/:slug', async (req, res) => {
   try {
     const item = await DocModel.findOne({ slug: req.params.slug, isDeleted: { $ne: true } }).lean();
     if (!item) return res.status(404).json({ error: 'Not found' });
+
+    const access = await grantsFor(req);
+    if (!access.admin) {
+      const folders = await liveFolders();
+      if (!canOpenDocument(access, folders, item)) {
+        const folder = folders.find((f) => f._id.toString() === String(item.folderId));
+        return res.status(403).json({
+          error: 'You do not have access to this document',
+          documentId: item._id.toString(),
+          documentName: item.name,
+          folderId: item.folderId ? String(item.folderId) : '',
+          folderName: folder ? folder.name : '',
+        });
+      }
+    }
     res.json({ item: { ...item, id: item._id.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/documents/reorder', async (req, res) => {
+app.put('/api/documents/reorder', requireAdmin, async (req, res) => {
   try {
     const { orderedIds } = req.body;
     if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
@@ -2684,16 +3057,17 @@ app.put('/api/documents/reorder', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/documents', async (req, res) => {
+app.post('/api/documents', requireAdmin, async (req, res) => {
   try {
     const { name, content, fileType } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
     let slug = slugifyDocument(name);
     const existing = await DocModel.findOne({ slug }).lean();
     if (existing) slug = slug + '-' + Date.now();
-    const count = await DocModel.countDocuments();
+    const folderId = await resolveFolderId(req.body.folderId);
+    const count = await DocModel.countDocuments({ folderId, isDeleted: { $ne: true } });
     const item = await DocModel.create({
-      name, slug, content: content || '', fileType: fileType || 'manual', order: count,
+      name, slug, content: sanitizeHtml(content || ''), fileType: fileType || 'manual', folderId, order: count,
     });
     await recordLifecycle('document', item.toObject(), 'created', req);
     res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
@@ -2702,19 +3076,42 @@ app.post('/api/documents', async (req, res) => {
 
 const docsDir = path.join(__dirname, 'assets', 'documents');
 if (!fs.existsSync(docsDir)) fs.mkdirSync(docsDir, { recursive: true });
-app.use('/assets/documents', express.static(docsDir));
+app.use('/assets/documents', express.static(docsDir, {
+  setHeaders: (res) => {
+    // Uploaded documents are downloads, never pages: force a save dialog and
+    // forbid content sniffing so nothing executes in our origin.
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Content-Disposition', 'attachment');
+    res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+  },
+}));
 
+const DOC_UPLOAD_TYPES = {
+  'application/pdf': '.pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.ms-excel': '.xls',
+};
 const docStorage = multer.diskStorage({
   destination: (req, file, cb) => { cb(null, docsDir); },
   filename: (req, file, cb) => {
-    const safe = (req.body.name || 'document').replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_');
-    const ext = path.extname(file.originalname) || '';
-    cb(null, `${safe}_${Date.now()}${ext}`);
+    // A random server-generated name with an extension derived from the accepted
+    // MIME type — never from the uploaded filename, so an attacker cannot choose
+    // what the file is called or how it is typed on disk.
+    const ext = DOC_UPLOAD_TYPES[file.mimetype] || '.bin';
+    cb(null, `${crypto.randomBytes(16).toString('hex')}${ext}`);
   },
 });
-const docUpload = multer({ storage: docStorage });
+const docUpload = multer({
+  storage: docStorage,
+  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => {
+    if (DOC_UPLOAD_TYPES[file.mimetype]) cb(null, true);
+    else cb(new Error('Only PDF, DOCX or XLSX files are allowed'));
+  },
+});
 
-app.post('/api/documents/upload', docUpload.single('file'), async (req, res) => {
+app.post('/api/documents/upload', requireAdmin, docUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const name = req.body.name || path.parse(req.file.originalname).name;
@@ -2744,8 +3141,9 @@ app.post('/api/documents/upload', docUpload.single('file'), async (req, res) => 
       } catch (_) { fileType = 'docx'; }
     }
 
-    const count = await DocModel.countDocuments();
-    const item = await DocModel.create({ name, slug, content, fileUrl, fileType, order: count });
+    const uploadFolderId = await resolveFolderId(req.body.folderId);
+    const count = await DocModel.countDocuments({ folderId: uploadFolderId, isDeleted: { $ne: true } });
+    const item = await DocModel.create({ name, slug, content: sanitizeHtml(content), fileUrl, fileType, folderId: uploadFolderId, order: count });
     await audit(req, {
       action: 'upload.document_file', category: 'content',
       targetType: 'document', targetName: (req.file && req.file.originalname) || '',
@@ -2756,7 +3154,7 @@ app.post('/api/documents/upload', docUpload.single('file'), async (req, res) => 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/documents/:id', async (req, res) => {
+app.put('/api/documents/:id', requireAdmin, async (req, res) => {
   try {
     const { name, content, fileType } = req.body;
     const update = {};
@@ -2766,43 +3164,386 @@ app.put('/api/documents/:id', async (req, res) => {
       const existing = await DocModel.findOne({ slug: update.slug, _id: { $ne: req.params.id } }).lean();
       if (existing) update.slug = update.slug + '-' + Date.now();
     }
-    if (content !== undefined) update.content = content;
+    if (content !== undefined) update.content = sanitizeHtml(content);
     if (fileType !== undefined) update.fileType = fileType;
+    if (req.body.folderId !== undefined) update.folderId = await resolveFolderId(req.body.folderId);
     const before = await DocModel.findById(req.params.id).lean();
     const item = await DocModel.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ error: 'Not found' });
     await recordRevision('document', before, item, req);
+    if (update.folderId !== undefined && String(before && before.folderId || '') !== String(update.folderId || '')) {
+      await auditDocumentMove(req, item, before && before.folderId, update.folderId);
+    }
     res.json({ success: true, item: { ...item, id: item._id.toString() } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/documents/:id', async (req, res) => {
+app.delete('/api/documents/:id', requireAdmin, async (req, res) => {
   try {
-    const item = await DocModel.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date() }, { new: true });
+    const item = await DocModel.findByIdAndUpdate(req.params.id, { isDeleted: true, deletedAt: new Date(), deletedWith: null }, { new: true });
     if (!item) return res.status(404).json({ error: 'Not found' });
     await recordLifecycle('document', item.toObject(), 'deleted', req);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Accepts '' / null / undefined as "the top level" and rejects anything that is
+// not a live folder, so a document can never be parked under a missing parent.
+async function resolveFolderId(raw) {
+  if (!raw) return null;
+  const folder = await DocumentFolder.findOne({ _id: raw, isDeleted: { $ne: true } }).lean();
+  if (!folder) throw new Error('Folder not found');
+  return folder._id;
+}
+
+async function auditDocumentMove(req, item, fromId, toId) {
+  const folders = await liveFolders();
+  const from = folderPath(folders, fromId) || 'the top level';
+  const to = folderPath(folders, toId) || 'the top level';
+  await audit(req, {
+    action: 'content.document_moved', category: 'content',
+    targetType: 'document', targetId: item._id, targetName: item.name || '',
+    summary: 'Document "' + (item.name || '') + '" moved from ' + from + ' to ' + to,
+    details: { from, to },
+  });
+}
+
+// Moving a document is its own action rather than a field on the save, so the
+// tree can be rearranged without touching the document's content or revisions.
+app.put('/api/documents/:id/folder', requireAdmin, async (req, res) => {
+  try {
+    const item = await DocModel.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
+    if (!item) return res.status(404).json({ error: 'Not found' });
+    const target = await resolveFolderId(req.body.folderId);
+    const previous = item.folderId;
+    if (String(previous || '') === String(target || '')) return res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
+
+    item.folderId = target;
+    item.order = await DocModel.countDocuments({ folderId: target, isDeleted: { $ne: true }, _id: { $ne: item._id } });
+    await item.save();
+    await auditDocumentMove(req, item, previous, target);
+    res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// --------------- Document Folders ---------------
+
+// ---- Per-document access -----------------------------------------------
+//
+// Folders are open to browse: anyone may expand one and read the names of the
+// documents in it, because you cannot ask for something you cannot see. What a
+// grant controls is opening a document. A grant is either the document itself,
+// or a folder, which covers every document in it and below it - including ones
+// added later, so a folder grant does not go stale.
+
+async function grantsFor(req) {
+  const decoded = decodeToken(req);
+  const empty = { admin: false, email: '', docGrants: new Set(), folderGrants: new Set() };
+  if (!decoded) return empty;
+
+  const email = String(decoded.email || '').toLowerCase().trim();
+  const isEnvAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase().trim();
+
+  let user = null;
+  try {
+    user = await User.findOne({ email }).select('role isActive documentAccess documentFolders').lean();
+  } catch (_) { /* fall back to the token below */ }
+
+  // A deactivated account loses access at once rather than when its token runs out.
+  if (user && user.isActive === false) return { ...empty, email };
+
+  // The database is the authority on the role, not the token: promoting or
+  // demoting somebody must take effect on their next request, not up to eight
+  // hours later when the token they are holding finally expires.
+  const admin = isEnvAdmin || (user ? user.role === 'admin' : decoded.role === 'admin');
+
+  return {
+    admin,
+    email,
+    docGrants: new Set(((user && user.documentAccess) || []).map(String)),
+    folderGrants: new Set(((user && user.documentFolders) || []).map(String)),
+  };
+}
+
+// True when a folder grant covers this folder or any folder above it.
+function folderGranted(folders, folderGrants, folderId) {
+  if (!folderId || !folderGrants.size) return false;
+  const byId = new Map(folders.map((f) => [f._id.toString(), f]));
+  let cursor = byId.get(String(folderId));
+  const guard = new Set();
+  while (cursor && !guard.has(cursor._id.toString())) {
+    if (folderGrants.has(cursor._id.toString())) return true;
+    guard.add(cursor._id.toString());
+    cursor = cursor.parentId ? byId.get(cursor.parentId.toString()) : null;
+  }
+  return false;
+}
+
+// Can this caller open this document?
+function canOpenDocument(access, folders, doc) {
+  if (access.admin) return true;
+  if (access.docGrants.has(String(doc._id || doc.id))) return true;
+  return folderGranted(folders, access.folderGrants, doc.folderId);
+}
+
+function mapFolder(f) {
+  return {
+    id: f._id.toString(),
+    _id: f._id.toString(),
+    name: f.name,
+    slug: f.slug,
+    parentId: f.parentId ? f.parentId.toString() : null,
+    order: f.order,
+  };
+}
+
+// Loads the whole folder tree flat. Callers assemble it in memory; it is a
+// handful of records, so a nested aggregation would cost more than it saves.
+async function liveFolders() {
+  return DocumentFolder.find({ isDeleted: { $ne: true } }).sort({ order: 1, createdAt: 1 }).lean();
+}
+
+// Every folder below `rootId`, used to stop a move that would put a folder
+// inside its own subtree and orphan the branch.
+function descendantIds(folders, rootId) {
+  const byParent = new Map();
+  folders.forEach((f) => {
+    const key = f.parentId ? f.parentId.toString() : '';
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(f);
+  });
+  const out = [];
+  const walk = (id) => {
+    (byParent.get(id) || []).forEach((child) => {
+      out.push(child._id.toString());
+      walk(child._id.toString());
+    });
+  };
+  walk(String(rootId));
+  return out;
+}
+
+// Breadcrumb for a folder ("Guides / Migration / Setup"), so audit entries say
+// where in the tree something happened rather than just naming the folder.
+function folderPath(folders, folderId) {
+  if (!folderId) return '';
+  const byId = new Map(folders.map((f) => [f._id.toString(), f]));
+  const parts = [];
+  let cursor = byId.get(String(folderId));
+  const guard = new Set();
+  while (cursor && !guard.has(cursor._id.toString())) {
+    guard.add(cursor._id.toString());
+    parts.unshift(cursor.name);
+    cursor = cursor.parentId ? byId.get(cursor.parentId.toString()) : null;
+  }
+  return parts.join(' / ');
+}
+
+// Folders are structure, not a permission boundary: everyone may browse them.
+// Access is decided per document, inside.
+app.get('/api/document-folders', async (req, res) => {
+  try {
+    const folders = await liveFolders();
+    res.json({ folders: folders.map(mapFolder) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/document-folders', requireAdmin, async (req, res) => {
+  try {
+    const name = (req.body.name || '').trim();
+    const parentId = req.body.parentId || null;
+    if (!name) return res.status(400).json({ error: 'Folder name is required' });
+
+    if (parentId) {
+      const parent = await DocumentFolder.findOne({ _id: parentId, isDeleted: { $ne: true } }).lean();
+      if (!parent) return res.status(404).json({ error: 'Parent folder not found' });
+    }
+    const clash = await DocumentFolder.findOne({ name, parentId: parentId || null, isDeleted: { $ne: true } }).lean();
+    if (clash) return res.status(400).json({ error: 'A folder with that name already exists here' });
+
+    const siblings = await DocumentFolder.countDocuments({ parentId: parentId || null, isDeleted: { $ne: true } });
+    const folder = await DocumentFolder.create({
+      name,
+      slug: slugifyDocument(name) + '-' + Date.now().toString(36),
+      parentId: parentId || null,
+      order: siblings,
+    });
+
+    const where = folderPath(await liveFolders(), folder.parentId);
+    await audit(req, {
+      action: 'content.folder_created', category: 'content',
+      targetType: 'documentFolder', targetId: folder._id, targetName: name,
+      summary: 'Document folder "' + name + '" created ' + (where ? 'in ' + where : 'at the top level'),
+      details: { parent: where || 'root' },
+    });
+    res.json({ success: true, folder: mapFolder(folder) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/document-folders/reorder', requireAdmin, async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) return res.status(400).json({ error: 'orderedIds array required' });
+    await DocumentFolder.bulkWrite(orderedIds.map((id, idx) => ({
+      updateOne: { filter: { _id: id }, update: { $set: { order: idx } } },
+    })));
+    await audit(req, {
+      action: 'content.folder_reordered', category: 'content',
+      targetType: 'documentFolder', targetName: 'folder order',
+      summary: 'Reordered ' + orderedIds.length + ' document folder(s)',
+      details: { count: orderedIds.length },
+    });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/document-folders/:id', requireAdmin, async (req, res) => {
+  try {
+    const folder = await DocumentFolder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
+    if (!folder) return res.status(404).json({ error: 'Not found' });
+
+    const folders = await liveFolders();
+    const beforeName = folder.name;
+    const beforeParent = folderPath(folders, folder.parentId);
+
+    let nextParentId = folder.parentId ? folder.parentId.toString() : null;
+    if (req.body.parentId !== undefined) {
+      nextParentId = req.body.parentId || null;
+      if (nextParentId) {
+        if (nextParentId === String(folder._id)) return res.status(400).json({ error: 'A folder cannot be moved into itself' });
+        if (descendantIds(folders, folder._id).includes(nextParentId)) {
+          return res.status(400).json({ error: 'A folder cannot be moved into one of its own subfolders' });
+        }
+        if (!folders.some((f) => f._id.toString() === nextParentId)) {
+          return res.status(404).json({ error: 'Parent folder not found' });
+        }
+      }
+    }
+
+    const nextName = req.body.name !== undefined ? (req.body.name || '').trim() : folder.name;
+    if (!nextName) return res.status(400).json({ error: 'Folder name is required' });
+
+    const clash = await DocumentFolder.findOne({
+      name: nextName, parentId: nextParentId || null,
+      _id: { $ne: folder._id }, isDeleted: { $ne: true },
+    }).lean();
+    if (clash) return res.status(400).json({ error: 'A folder with that name already exists here' });
+
+    const movedParent = String(nextParentId || '') !== String(folder.parentId || '');
+    folder.name = nextName;
+    if (req.body.name !== undefined) folder.slug = slugifyDocument(nextName) + '-' + folder._id.toString().slice(-6);
+    folder.parentId = nextParentId || null;
+    if (movedParent) {
+      folder.order = await DocumentFolder.countDocuments({
+        parentId: nextParentId || null, isDeleted: { $ne: true }, _id: { $ne: folder._id },
+      });
+    }
+    await folder.save();
+
+    const parts = [];
+    if (nextName !== beforeName) parts.push('renamed from "' + beforeName + '" to "' + nextName + '"');
+    if (movedParent) {
+      const afterParent = folderPath(await liveFolders(), folder.parentId);
+      parts.push('moved from ' + (beforeParent || 'the top level') + ' to ' + (afterParent || 'the top level'));
+    }
+    await audit(req, {
+      action: 'content.folder_updated', category: 'content',
+      targetType: 'documentFolder', targetId: folder._id, targetName: nextName,
+      summary: parts.length
+        ? 'Document folder "' + nextName + '" ' + parts.join(' and ')
+        : 'Document folder "' + nextName + '" saved with no changes',
+      details: { before: beforeName, after: nextName, moved: movedParent },
+    });
+    res.json({ success: true, folder: mapFolder(folder) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Deleting a folder takes everything inside it along: subfolders and documents
+// alike. Nothing is destroyed - the whole subtree is stamped with this folder's
+// id and moves to the Trash, so restoring the folder brings it all back.
+app.delete('/api/document-folders/:id', requireAdmin, async (req, res) => {
+  try {
+    const folder = await DocumentFolder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
+    if (!folder) return res.status(404).json({ error: 'Not found' });
+
+    const folders = await liveFolders();
+    const where = folderPath(folders, folder.parentId);
+    const subtree = descendantIds(folders, folder._id);
+    const scope = [folder._id.toString(), ...subtree];
+    const at = new Date();
+
+    const docs = await DocModel.find({ folderId: { $in: scope }, isDeleted: { $ne: true } }).select('_id name').lean();
+
+    if (subtree.length) {
+      await DocumentFolder.updateMany(
+        { _id: { $in: subtree } },
+        { $set: { isDeleted: true, deletedAt: at, deletedWith: folder._id } },
+      );
+    }
+    if (docs.length) {
+      await DocModel.updateMany(
+        { _id: { $in: docs.map(d => d._id) } },
+        { $set: { isDeleted: true, deletedAt: at, deletedWith: folder._id } },
+      );
+    }
+    folder.isDeleted = true;
+    folder.deletedAt = at;
+    folder.deletedWith = null;
+    await folder.save();
+
+    const carried = [];
+    if (subtree.length) carried.push(subtree.length + ' subfolder' + (subtree.length > 1 ? 's' : ''));
+    if (docs.length) carried.push(docs.length + ' document' + (docs.length > 1 ? 's' : ''));
+    await audit(req, {
+      action: 'content.folder_deleted', category: 'content',
+      targetType: 'documentFolder', targetId: folder._id, targetName: folder.name,
+      summary: 'Document folder "' + folder.name + '" deleted' + (where ? ' from ' + where : '')
+        + (carried.length ? ' with ' + carried.join(' and ') : '') + ' - moved to Trash',
+      details: { parent: where || 'root', subfolders: subtree.length, documents: docs.map(d => d.name) },
+    });
+    res.json({ success: true, subfolders: subtree.length, documents: docs.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // --------------- Trash Management ---------------
 
-app.get('/api/trash', async (req, res) => {
+app.get('/api/trash', requireAdmin, async (req, res) => {
   try {
-    const [features, productConfigs, matrices, cloudInfos, deletedCombinations, documents] = await Promise.all([
+    // Anything swept up by a folder delete carries `deletedWith`, and is listed
+    // under that folder rather than on its own - restoring the folder is what
+    // brings it back.
+    const [features, productConfigs, matrices, cloudInfos, deletedCombinations, documents, documentFolders] = await Promise.all([
       Feature.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
       ProductConfig.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
       CompatibilityMatrix.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
       CloudInfo.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
       DeletedCombination.find({ isDeleted: true }).sort({ deletedAt: -1 }).lean(),
-      DocModel.find({ isDeleted: true }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
+      DocModel.find({ isDeleted: true, deletedWith: null }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
+      DocumentFolder.find({ isDeleted: true, deletedWith: null }).select('name slug deletedAt').sort({ deletedAt: -1 }).lean(),
     ]);
+
+    // How much comes back with each deleted folder, so the Trash row can say so.
+    const folderCarries = await Promise.all(documentFolders.map(async (f) => {
+      const [subfolders, docs] = await Promise.all([
+        DocumentFolder.countDocuments({ deletedWith: f._id }),
+        DocModel.countDocuments({ deletedWith: f._id }),
+      ]);
+      return { id: f._id.toString(), subfolders, documents: docs };
+    }));
+    const carriesById = new Map(folderCarries.map(c => [c.id, c]));
     res.json({
       features: features.map(f => ({ ...mapFeature(f), deletedAt: f.deletedAt })),
       productConfigs: productConfigs.map(c => ({ id: c._id.toString(), name: c.name, combinations: c.combinations, deletedAt: c.deletedAt })),
       matrices: matrices.map(m => ({ id: m._id.toString(), name: m.name, slug: m.slug, deletedAt: m.deletedAt })),
       cloudInfos: cloudInfos.map(i => ({ id: i._id.toString(), name: i.name, slug: i.slug, deletedAt: i.deletedAt })),
       documents: documents.map(d => ({ id: d._id.toString(), name: d.name, slug: d.slug, deletedAt: d.deletedAt })),
+      documentFolders: documentFolders.map(f => ({
+        id: f._id.toString(),
+        name: f.name,
+        slug: f.slug,
+        deletedAt: f.deletedAt,
+        ...(carriesById.get(f._id.toString()) || { subfolders: 0, documents: 0 }),
+      })),
       combinations: deletedCombinations.map((c) => ({
         id: c._id.toString(),
         productType: c.productType,
@@ -2816,7 +3557,7 @@ app.get('/api/trash', async (req, res) => {
   }
 });
 
-app.put('/api/trash/restore/:type/:id', async (req, res) => {
+app.put('/api/trash/restore/:type/:id', requireAdmin, async (req, res) => {
   try {
     const { type, id } = req.params;
     if (type === 'combination') {
@@ -2856,6 +3597,43 @@ app.put('/api/trash/restore/:type/:id', async (req, res) => {
       return res.json({ success: true });
     }
 
+    if (type === 'documentFolder') {
+      const folder = await DocumentFolder.findById(id);
+      if (!folder) return res.status(404).json({ error: 'Not found' });
+      if (!folder.isDeleted) return res.status(400).json({ error: 'Item is not in trash' });
+
+      // Whatever went down with this folder comes back with it.
+      const [subfolders, docs] = await Promise.all([
+        DocumentFolder.updateMany({ deletedWith: folder._id }, { $set: { isDeleted: false, deletedAt: null, deletedWith: null } }),
+        DocModel.updateMany({ deletedWith: folder._id }, { $set: { isDeleted: false, deletedAt: null, deletedWith: null } }),
+      ]);
+
+      // Its old parent may itself be gone; rather than restore an orphan that
+      // nothing can reach, put the folder back at the top level.
+      let reparented = false;
+      if (folder.parentId) {
+        const parent = await DocumentFolder.findOne({ _id: folder.parentId, isDeleted: { $ne: true } }).lean();
+        if (!parent) { folder.parentId = null; reparented = true; }
+      }
+      folder.isDeleted = false;
+      folder.deletedAt = null;
+      folder.deletedWith = null;
+      await folder.save();
+
+      const brought = [];
+      if (subfolders.modifiedCount) brought.push(`${subfolders.modifiedCount} subfolder(s)`);
+      if (docs.modifiedCount) brought.push(`${docs.modifiedCount} document(s)`);
+      await audit(req, {
+        action: 'content.restored_from_trash', category: 'content',
+        targetType: 'documentFolder', targetId: folder._id, targetName: folder.name,
+        summary: `Document folder "${folder.name}" restored from Trash`
+          + (brought.length ? ` with ${brought.join(' and ')}` : '')
+          + (reparented ? ' — put back at the top level because its parent folder is gone' : ''),
+        details: { subfolders: subfolders.modifiedCount, documents: docs.modifiedCount, reparented },
+      });
+      return res.json({ success: true });
+    }
+
     let Model;
     if (type === 'feature') Model = Feature;
     else if (type === 'productConfig') Model = ProductConfig;
@@ -2867,6 +3645,13 @@ app.put('/api/trash/restore/:type/:id', async (req, res) => {
     const doc = await Model.findByIdAndUpdate(id, { isDeleted: false, deletedAt: null }, { new: true });
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
+    // A document whose folder was deleted in the meantime has nowhere to go back
+    // to, so it returns to the top level instead of disappearing from the tree.
+    if (type === 'document' && doc.folderId) {
+      const parent = await DocumentFolder.findOne({ _id: doc.folderId, isDeleted: { $ne: true } }).lean();
+      if (!parent) { doc.folderId = null; await doc.save(); }
+    }
+
     // A restore is a content change: it belongs in the revision log so the row
     // reappears in version history and the people watching that page are told.
     await recordLifecycle(type, doc.toObject ? doc.toObject() : doc, 'restored', req);
@@ -2876,7 +3661,7 @@ app.put('/api/trash/restore/:type/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/trash/permanent/:type/:id', async (req, res) => {
+app.delete('/api/trash/permanent/:type/:id', requireAdmin, async (req, res) => {
   try {
     const { type, id } = req.params;
     if (type === 'combination') {
@@ -2888,6 +3673,26 @@ app.delete('/api/trash/permanent/:type/:id', async (req, res) => {
         action: 'content.permanently_deleted', category: 'content',
         targetType: String(req.params.type), targetId: req.params.id,
         summary: `Permanently deleted ${req.params.type} from Trash`,
+      });
+      return res.json({ success: true });
+    }
+
+    if (type === 'documentFolder') {
+      const folder = await DocumentFolder.findById(id);
+      if (!folder) return res.status(404).json({ error: 'Not found' });
+      if (!folder.isDeleted) return res.status(400).json({ error: 'Item is not in trash' });
+
+      const [subfolders, docs] = await Promise.all([
+        DocumentFolder.deleteMany({ deletedWith: folder._id }),
+        DocModel.deleteMany({ deletedWith: folder._id }),
+      ]);
+      await DocumentFolder.findByIdAndDelete(id);
+      await audit(req, {
+        action: 'content.permanently_deleted', category: 'content',
+        targetType: 'documentFolder', targetId: id, targetName: folder.name,
+        summary: `Permanently deleted document folder "${folder.name}" from Trash`
+          + ` — ${subfolders.deletedCount} subfolder(s) and ${docs.deletedCount} document(s) went with it`,
+        details: { subfolders: subfolders.deletedCount, documents: docs.deletedCount },
       });
       return res.json({ success: true });
     }
@@ -2939,25 +3744,59 @@ app.delete('/api/trash/permanent/:type/:id', async (req, res) => {
 
 // --------------- Image Proxy (for DOCX export) ---------------
 
-app.get('/api/image-proxy', async (req, res) => {
+// Private, loopback and link-local ranges an SSRF would target (incl. cloud
+// metadata at 169.254.169.254). Blocks IPv4 literals and IPv4-mapped IPv6.
+function isPrivateAddress(host) {
+  const h = String(host || '').replace(/^\[|\]$/g, '').replace(/^::ffff:/i, '');
+  if (/^(localhost)$/i.test(h)) return true;
+  if (net.isIPv6(h)) return /^(::1|fe80:|fc|fd)/i.test(h);
+  if (!net.isIP(h)) return false; // a hostname; DNS is re-checked below
+  const p = h.split('.').map(Number);
+  if (p.length !== 4 || p.some(n => Number.isNaN(n))) return false;
+  const [a, b] = p;
+  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+}
+
+app.get('/api/image-proxy', requireAuth, async (req, res) => {
   const url = req.query.url;
-  if (!url) return res.status(400).send('Missing url param');
+  if (!url || typeof url !== 'string') return res.status(400).send('Missing url param');
   try {
+    // Local asset: resolve and confirm the path stays inside the assets dir
+    // before reading it — no traversal out of the tree (C-2 fix).
     if (url.startsWith('/assets/') || url.startsWith('assets/')) {
-      const localPath = path.join(__dirname, url.startsWith('/') ? url.slice(1) : url);
-      if (fs.existsSync(localPath)) {
-        return res.sendFile(path.resolve(localPath));
+      const rel = url.startsWith('/') ? url.slice(1) : url;
+      const base = path.resolve(assetsDir);
+      const resolved = path.resolve(__dirname, rel);
+      if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+        return res.status(400).send('Invalid path');
+      }
+      if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+        return res.sendFile(resolved);
       }
       return res.status(404).send('Local file not found');
     }
-    const response = await fetch(url);
+
+    // Remote: https only, no private targets, no redirects, size-capped,
+    // image content only (C-3 fix).
+    let parsed;
+    try { parsed = new URL(url); } catch { return res.status(400).send('Invalid url'); }
+    if (!/^https?:$/.test(parsed.protocol)) return res.status(400).send('Only http(s) allowed');
+    if (isPrivateAddress(parsed.hostname)) return res.status(403).send('Blocked host');
+    const lookup = await dns.promises.lookup(parsed.hostname, { all: true }).catch(() => []);
+    if (lookup.some(a => isPrivateAddress(a.address))) return res.status(403).send('Blocked host');
+
+    const response = await fetch(parsed.toString(), { redirect: 'error', signal: AbortSignal.timeout(8000) });
     if (!response.ok) return res.status(response.status).send('Failed to fetch image');
-    const contentType = response.headers.get('content-type') || 'image/png';
-    res.set('Content-Type', contentType);
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.startsWith('image/')) return res.status(415).send('Not an image');
     const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > 10 * 1024 * 1024) return res.status(413).send('Image too large');
+    res.set('Content-Type', contentType);
+    res.set('X-Content-Type-Options', 'nosniff');
     res.send(buffer);
   } catch (err) {
-    res.status(500).send('Proxy error: ' + err.message);
+    res.status(500).send('Proxy error');
   }
 });
 

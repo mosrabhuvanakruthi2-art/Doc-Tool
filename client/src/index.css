@@ -6126,3 +6126,22 @@ a:hover { text-decoration: underline; }
   color: var(--text-muted);
   font-size: 12px;
 }
+
+/* Cloud Info: direct drag-to-reorder rows */
+.cloud-info-drag-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.cloud-info-list-item[draggable="true"] { cursor: grab; }
+.cloud-info-list-item[draggable="true"]:active { cursor: grabbing; }
+.cloud-info-dragging { opacity: 0.45; }
+.cloud-info-grip {
+  color: var(--text-muted);
+  font-size: 15px;
+  margin-right: 9px;
+  cursor: grab;
+  user-select: none;
+}
+.cloud-info-list-item .btn-edit-sm,
+.cloud-info-list-item .btn-delete-inline { -webkit-user-drag: none; }

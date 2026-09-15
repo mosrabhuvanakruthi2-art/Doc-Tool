@@ -2986,6 +2986,21 @@ app.put('/api/cloud-info-reorder', requireAdmin, async (req, res) => {
 
 // --------------- Documents ---------------
 
+// A document name must be unique inside its folder. Returns the clashing
+// document, or null. `exceptId` skips the document being edited/moved itself.
+// Compared case-insensitively and trimmed, in memory to avoid regex escaping.
+async function duplicateDocInFolder(name, folderId, exceptId) {
+  const target = String(name || '').trim().toLowerCase();
+  if (!target) return null;
+  const siblings = await DocModel
+    .find({ folderId: folderId || null, isDeleted: { $ne: true } })
+    .select('_id name').lean();
+  return siblings.find(d =>
+    String(d.name || '').trim().toLowerCase() === target
+    && (!exceptId || String(d._id) !== String(exceptId))
+  ) || null;
+}
+
 function slugifyDocument(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
@@ -3061,10 +3076,13 @@ app.post('/api/documents', requireAdmin, async (req, res) => {
   try {
     const { name, content, fileType } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
+    const folderId = await resolveFolderId(req.body.folderId);
+    if (await duplicateDocInFolder(name, folderId)) {
+      return res.status(409).json({ error: `A document named "${String(name).trim()}" already exists in this folder.` });
+    }
     let slug = slugifyDocument(name);
     const existing = await DocModel.findOne({ slug }).lean();
     if (existing) slug = slug + '-' + Date.now();
-    const folderId = await resolveFolderId(req.body.folderId);
     const count = await DocModel.countDocuments({ folderId, isDeleted: { $ne: true } });
     const item = await DocModel.create({
       name, slug, content: sanitizeHtml(content || ''), fileType: fileType || 'manual', folderId, order: count,
@@ -3115,6 +3133,12 @@ app.post('/api/documents/upload', requireAdmin, docUpload.single('file'), async 
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const name = req.body.name || path.parse(req.file.originalname).name;
+    const uploadFolderId = await resolveFolderId(req.body.folderId);
+    if (await duplicateDocInFolder(name, uploadFolderId)) {
+      // Remove the file multer already wrote before rejecting.
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return res.status(409).json({ error: `A document named "${String(name).trim()}" already exists in this folder.` });
+    }
     let slug = slugifyDocument(name);
     const existing = await DocModel.findOne({ slug }).lean();
     if (existing) slug = slug + '-' + Date.now();
@@ -3141,7 +3165,6 @@ app.post('/api/documents/upload', requireAdmin, docUpload.single('file'), async 
       } catch (_) { fileType = 'docx'; }
     }
 
-    const uploadFolderId = await resolveFolderId(req.body.folderId);
     const count = await DocModel.countDocuments({ folderId: uploadFolderId, isDeleted: { $ne: true } });
     const item = await DocModel.create({ name, slug, content: sanitizeHtml(content), fileUrl, fileType, folderId: uploadFolderId, order: count });
     await audit(req, {
@@ -3157,7 +3180,18 @@ app.post('/api/documents/upload', requireAdmin, docUpload.single('file'), async 
 app.put('/api/documents/:id', requireAdmin, async (req, res) => {
   try {
     const { name, content, fileType } = req.body;
+    const before = await DocModel.findById(req.params.id).lean();
+    if (!before) return res.status(404).json({ error: 'Not found' });
     const update = {};
+    const nextFolderId = req.body.folderId !== undefined
+      ? await resolveFolderId(req.body.folderId)
+      : (before.folderId || null);
+    const nextName = name !== undefined ? name : before.name;
+    if ((name !== undefined && name !== before.name) || req.body.folderId !== undefined) {
+      if (await duplicateDocInFolder(nextName, nextFolderId, req.params.id)) {
+        return res.status(409).json({ error: `A document named "${String(nextName).trim()}" already exists in that folder.` });
+      }
+    }
     if (name !== undefined) {
       update.name = name;
       update.slug = slugifyDocument(name);
@@ -3166,8 +3200,7 @@ app.put('/api/documents/:id', requireAdmin, async (req, res) => {
     }
     if (content !== undefined) update.content = sanitizeHtml(content);
     if (fileType !== undefined) update.fileType = fileType;
-    if (req.body.folderId !== undefined) update.folderId = await resolveFolderId(req.body.folderId);
-    const before = await DocModel.findById(req.params.id).lean();
+    if (req.body.folderId !== undefined) update.folderId = nextFolderId;
     const item = await DocModel.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ error: 'Not found' });
     await recordRevision('document', before, item, req);
@@ -3217,6 +3250,9 @@ app.put('/api/documents/:id/folder', requireAdmin, async (req, res) => {
     const target = await resolveFolderId(req.body.folderId);
     const previous = item.folderId;
     if (String(previous || '') === String(target || '')) return res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
+    if (await duplicateDocInFolder(item.name, target, item._id)) {
+      return res.status(409).json({ error: `A document named "${item.name}" already exists in the destination folder.` });
+    }
 
     item.folderId = target;
     item.order = await DocModel.countDocuments({ folderId: target, isDeleted: { $ne: true }, _id: { $ne: item._id } });

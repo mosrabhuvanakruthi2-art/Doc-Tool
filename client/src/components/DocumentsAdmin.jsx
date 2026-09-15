@@ -495,6 +495,7 @@ function DocumentsAdmin({ onChanged }) {
         body: JSON.stringify({ name: baseName, content: result.value, fileType: 'docx', folderId: folderId || null }),
       });
       const data = await res.json();
+      if (res.status === 409) { const e = new Error(data.error); e.duplicate = true; throw e; }
       if (!res.ok || data.error) throw new Error(data.error || 'Upload failed');
     } else {
       const form = new FormData();
@@ -503,6 +504,7 @@ function DocumentsAdmin({ onChanged }) {
       if (folderId) form.append('folderId', folderId);
       const res = await fetch('/api/documents/upload', { method: 'POST', body: form });
       const data = await res.json();
+      if (res.status === 409) { const e = new Error(data.error); e.duplicate = true; throw e; }
       if (!res.ok || data.error) throw new Error(data.error || 'Upload failed');
     }
   };
@@ -533,7 +535,7 @@ function DocumentsAdmin({ onChanged }) {
     };
 
     setFolderUpload({ done: 0, total: files.length });
-    let ok = 0; const failed = [];
+    let ok = 0; let duplicates = 0; const failed = [];
     for (const file of files) {
       try {
         // webkitRelativePath is like "Guides/Migration/setup.pdf" — everything
@@ -544,18 +546,21 @@ function DocumentsAdmin({ onChanged }) {
         await uploadOneFile(file, folderId);
         ok += 1;
       } catch (err) {
-        failed.push(file.webkitRelativePath || file.name);
+        // A name that already exists in its folder is skipped, not a failure.
+        if (err.duplicate) duplicates += 1;
+        else failed.push(file.webkitRelativePath || file.name);
       }
-      setFolderUpload({ done: ok + failed.length, total: files.length });
+      setFolderUpload({ done: ok + duplicates + failed.length, total: files.length });
     }
     setFolderUpload(null);
     await fetchAll();
     notifyChanged();
-    const skipped = picked.length - files.length;
+    const unsupported = picked.length - files.length;
+    const skipped = duplicates + unsupported;
     showToast(
       `Imported ${ok} document${ok !== 1 ? 's' : ''}`
       + (failed.length ? `, ${failed.length} failed` : '')
-      + (skipped ? `. Skipped ${skipped} unsupported file${skipped !== 1 ? 's' : ''}.` : ''),
+      + (skipped ? `. Skipped ${skipped}${duplicates ? ` (${duplicates} already existed)` : ''}${unsupported ? `${duplicates ? ',' : ''} ${unsupported} unsupported` : ''}.` : ''),
       failed.length ? 'error' : 'success',
     );
   };

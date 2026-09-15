@@ -143,8 +143,8 @@ function DocumentsAdmin({ onChanged }) {
 
   const submitRename = async (folder) => {
     const value = renameValue.trim();
-    if (!value) { showToast('Folder name is required', 'error'); return; }
-    if (value === folder.name) { setRenamingId(null); return; }
+    // Blank or unchanged: leave the folder as it was, no fuss.
+    if (!value || value === folder.name) { setRenamingId(null); setRenameValue(''); return; }
     try {
       const res = await fetch(`/api/document-folders/${folder.id}`, {
         method: 'PUT',
@@ -686,9 +686,10 @@ function DocumentsAdmin({ onChanged }) {
                 autoFocus
                 onClick={(e) => e.stopPropagation()}
                 onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={() => submitRename(folder)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') submitRename(folder);
-                  if (e.key === 'Escape') setRenamingId(null);
+                  if (e.key === 'Enter') { e.target.blur(); }
+                  if (e.key === 'Escape') { setRenameValue(folder.name); setRenamingId(null); }
                 }}
               />
             ) : (
@@ -704,12 +705,7 @@ function DocumentsAdmin({ onChanged }) {
           </div>
 
           <div className="doc-tree-actions">
-            {renamingId === folder.id ? (
-              <>
-                <button className="btn-confirm-yes" onClick={() => submitRename(folder)}>Save</button>
-                <button className="btn-confirm-cancel" onClick={() => setRenamingId(null)}>Cancel</button>
-              </>
-            ) : (
+            {renamingId !== folder.id && (
               <>
                 <button className="btn-tree-action" onClick={() => startNewFolder(folder.id)}>+ Subfolder</button>
                 <button className="btn-tree-action" onClick={() => handleNew(folder.id)}>+ Document</button>

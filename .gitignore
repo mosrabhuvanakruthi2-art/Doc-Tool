@@ -1,5 +1,6 @@
 node_modules/
 .env
 server/assets/screenshots/
+server/assets/documents/
 dist/
 .DS_Store

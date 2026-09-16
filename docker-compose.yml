@@ -1,10 +1,56 @@
 services:
   mongo:
     image: mongo:7
-    ports:
-      - "127.0.0.1:27017:27017"
+    restart: unless-stopped
+    # Not published: only the server container reaches it over the compose
+    # network. Add "127.0.0.1:27017:27017" here if you need mongosh from the host.
     volumes:
-      - docproject_mongo_data:/data/db
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  server:
+    build:
+      context: ./server
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "5000"
+      ASSETS_DIR: /app/data
+      # Ignored when MONGODB_URI is set in .env (e.g. Atlas).
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/docproject}
+    volumes:
+      - uploads:/app/data
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:5000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  client:
+    build:
+      context: ./client
+      args:
+        VITE_AZURE_CLIENT_ID: ${VITE_AZURE_CLIENT_ID:-}
+        VITE_AZURE_TENANT_ID: ${VITE_AZURE_TENANT_ID:-}
+    restart: unless-stopped
+    ports:
+      # Bound to loopback: put the host's nginx/Caddy in front for TLS.
+      # Change to "80:80" to expose it directly.
+      - "127.0.0.1:${HTTP_PORT:-8080}:80"
+    depends_on:
+      - server
 
 volumes:
-  docproject_mongo_data:
+  mongo_data:
+  uploads:

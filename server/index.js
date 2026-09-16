@@ -81,6 +81,13 @@ app.use(express.urlencoded({ extended: true, limit: API_BODY_LIMIT }));
 // Correct client IP behind nginx/other proxy, so limits key on the real client.
 app.set('trust proxy', 1);
 
+// Liveness/readiness probe for the container orchestrator. Registered before
+// the rate limiter so health checks never consume a request budget.
+app.get('/api/health', (req, res) => {
+  const states = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  res.json({ ok: true, mongo: states[mongoose.connection.readyState] || 'unknown' });
+});
+
 // Tiered rate limiting: a global ceiling on every API request, with tighter
 // limits on auth and uploads (see middleware/rateLimits).
 const { globalLimiter, uploadLimiter, authLimiter } = require('./middleware/rateLimits');
@@ -1015,11 +1022,30 @@ Fix options:
 
 // --------------- Upload Config (Cloudinary or Local) ---------------
 
-const assetsDir = path.join("/var/www/doc360tool/client/dist/", 'assets');
+// Where uploaded files live on disk. ASSETS_DIR lets a deployment (Docker
+// volume, systemd) put them outside the code tree; by default they sit under
+// server/assets. Public files (screenshots) and uploaded documents stay in
+// separate subtrees so the documents route keeps its attachment headers.
+const ASSETS_ROOT = process.env.ASSETS_DIR
+  ? path.resolve(process.env.ASSETS_DIR)
+  : path.join(__dirname, 'assets');
+const assetsDir = path.join(ASSETS_ROOT, 'public');
 const screenshotsDir = path.join(assetsDir, 'screenshots');
-[assetsDir, screenshotsDir].forEach(dir => {
+const docsDir = path.join(ASSETS_ROOT, 'documents');
+[assetsDir, screenshotsDir, docsDir].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
+
+// Map a public /assets/... URL back to a file on disk, refusing anything that
+// escapes the assets tree.
+function resolveAssetFile(urlPath) {
+  const rel = String(urlPath || '').replace(/^\//, '').replace(/^assets\//, '');
+  if (!rel || rel.includes('\0')) return null;
+  const base = rel.startsWith('documents/') ? ASSETS_ROOT : assetsDir;
+  const resolved = path.resolve(base, rel);
+  if (resolved !== ASSETS_ROOT && !resolved.startsWith(ASSETS_ROOT + path.sep)) return null;
+  return resolved;
+}
 const staticNoSniff = express.static(assetsDir, {
   setHeaders: (res) => {
     res.set('X-Content-Type-Options', 'nosniff');
@@ -3117,8 +3143,6 @@ app.post('/api/documents', requireAdmin, async (req, res) => {
   } catch (err) { sendServerError(res, err); }
 });
 
-const docsDir = path.join(__dirname, 'assets', 'documents');
-if (!fs.existsSync(docsDir)) fs.mkdirSync(docsDir, { recursive: true });
 app.use('/assets/documents', express.static(docsDir, {
   setHeaders: (res) => {
     // Uploaded documents are downloads, never pages: force a save dialog and
@@ -3800,8 +3824,8 @@ app.delete('/api/trash/permanent/:type/:id', requireAdmin, async (req, res) => {
     if (type === 'feature') {
       for (const screenshotPath of (doc.screenshots || [])) {
         if (screenshotPath.startsWith('/assets/')) {
-          const filePath = path.join(__dirname, screenshotPath.replace('/assets/', 'assets/'));
-          if (fs.existsSync(filePath)) {
+          const filePath = resolveAssetFile(screenshotPath);
+          if (filePath && fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
           }
         }
@@ -3838,10 +3862,8 @@ app.get('/api/image-proxy', requireAuth, async (req, res) => {
     // Local asset: resolve and confirm the path stays inside the assets dir
     // before reading it — no traversal out of the tree (C-2 fix).
     if (url.startsWith('/assets/') || url.startsWith('assets/')) {
-      const rel = url.startsWith('/') ? url.slice(1) : url;
-      const base = path.resolve(assetsDir);
-      const resolved = path.resolve(__dirname, rel);
-      if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+      const resolved = resolveAssetFile(url);
+      if (!resolved) {
         return res.status(400).send('Invalid path');
       }
       if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {

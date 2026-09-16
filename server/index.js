@@ -3891,6 +3891,19 @@ app.use((err, req, res, next) => {
 
 // --------------- Start Server ---------------
 
+// A rejected promise from one request (e.g. a background email or audit write)
+// shouldn't take the server down — log it with a full stack and keep serving.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', (reason && reason.stack) || reason);
+});
+// An uncaught exception leaves the process in an unknown state, so log it and
+// exit — a supervisor (pm2/systemd) restarts cleanly rather than running on in
+// a corrupt state or as a zombie.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', (err && err.stack) || err);
+  process.exit(1);
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

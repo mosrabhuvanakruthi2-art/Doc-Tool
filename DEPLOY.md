@@ -1,8 +1,9 @@
 # Deploying Doc-Tool with Docker Compose
 
-Three containers: `mongo` (database), `server` (Express API, port 5000, internal
-only), `client` (nginx serving the built React app and proxying `/api` and
-`/assets` to the API). Only the client's port is published, on `127.0.0.1`.
+Three containers: `mongo` (database), `server` (Express API, port 5000,
+internal only), `client` (nginx serving the built React app and proxying
+`/api` and `/assets` to the API). Only the client's port is published, on
+`127.0.0.1`.
 
 ```
 browser → host nginx/Caddy (TLS) → 127.0.0.1:8080 → client (nginx) ─┬─ static files
@@ -12,6 +13,46 @@ browser → host nginx/Caddy (TLS) → 127.0.0.1:8080 → client (nginx) ─┬�
 Persistent data lives in two named volumes: `mongo_data` (database) and
 `uploads` (screenshots + uploaded documents, mounted at `/app/data` in the
 server container). Rebuilding images never touches them.
+
+---
+
+## Environment files
+
+**Exactly the two files you already use locally — no third file.** Both are
+gitignored; templates are committed next to them.
+
+| File | Read by | When |
+|---|---|---|
+| `server/.env` | the API container | **runtime** — compose passes it in via `env_file` |
+| `client/.env` | the Vite build | **build time** — values are inlined into the JS bundle |
+
+Nothing is baked into the server image: `server/.env` is excluded by
+`.dockerignore` and injected at startup, so the same file drives local dev and
+the container.
+
+`client/.env` is different by nature. A browser bundle has no runtime env, so
+Vite substitutes `VITE_*` during `npm run build`. That means:
+
+- the file **must** be present when the client image is built (it is copied in
+  for the build stage only — the final nginx image contains just `dist/`);
+- changing it needs a **rebuild**, not a restart:
+  `docker compose up -d --build client`.
+
+Two settings that must be right or the deploy looks broken in confusing ways:
+
+- **`MONGODB_URI`** — with the bundled mongo container this must be
+  `mongodb://mongo:27017/docproject`. Inside a container `localhost` is the
+  container itself, so a localhost URI just hangs and fails. The server now
+  refuses to start on this and tells you. (Atlas SRV strings work as-is.)
+- **`FRONTEND_URL`** — must match your public URL exactly, no trailing slash,
+  or the API's CORS check rejects the browser.
+
+`PORT` in `server/.env` only affects local dev; compose forces `5000` inside
+the container so nginx and the healthcheck always agree.
+
+The server prints a `[config]` line at boot for anything missing, and exits
+with a clear message if `MONGODB_URI` or `JWT_SECRET` is absent — so
+`docker compose logs server` always tells you what's wrong.
 
 ---
 
@@ -33,20 +74,19 @@ server container). Rebuilding images never touches them.
    cd doc-tool
    ```
 
-3. **Create `.env` in the repo root** (it is gitignored — never commit it):
+3. **Add the two env files** (copy from your local machine, or start from the
+   templates):
 
    ```bash
-   cp .env.example .env
-   nano .env
+   cp server/.env.example server/.env && nano server/.env
+   cp client/.env.example client/.env && nano client/.env
    ```
 
-   Fill in at minimum: `FRONTEND_URL`, `MICROSOFT_REDIRECT_URI`, `ADMIN_EMAIL`,
-   `ADMIN_PASSWORD`, `JWT_SECRET` (`openssl rand -hex 32`), and the Azure ids.
-
-   Two of those values are used **twice** by design:
-   `AZURE_CLIENT_ID`/`AZURE_TENANT_ID` go to the API at runtime, and
-   `VITE_AZURE_CLIENT_ID`/`VITE_AZURE_TENANT_ID` are baked into the frontend
-   bundle at build time. Set both pairs to the same values.
+   In `server/.env` set at minimum `MONGODB_URI` (use `mongo:27017`),
+   `JWT_SECRET` (`openssl rand -hex 32`), `ADMIN_EMAIL`, `ADMIN_PASSWORD`,
+   `FRONTEND_URL`, `MICROSOFT_REDIRECT_URI` and the `AZURE_*` values.
+   In `client/.env` set `VITE_AZURE_CLIENT_ID` and `VITE_AZURE_TENANT_ID` to
+   the same ids.
 
 4. **Start it:**
 
@@ -55,6 +95,8 @@ server container). Rebuilding images never touches them.
    docker compose ps
    curl -s localhost:8080/api/health     # {"ok":true,"mongo":"connected"}
    ```
+
+   If a container is restarting, read why: `docker compose logs server`.
 
 5. **Put TLS in front of it.** The client container listens on
    `127.0.0.1:8080` only. Example host nginx server block:
@@ -77,9 +119,6 @@ server container). Rebuilding images never touches them.
    }
    ```
 
-   `FRONTEND_URL` in `.env` must match this public URL exactly (no trailing
-   slash) or the API's CORS check will reject the browser.
-
 ---
 
 ## Every deploy after a `git push`
@@ -88,28 +127,22 @@ server container). Rebuilding images never touches them.
 cd /opt/doc-tool
 git pull
 docker compose up -d --build
-docker compose ps
+curl -s localhost:8080/api/health
 ```
 
 `up -d --build` rebuilds only what changed and replaces those containers;
-volumes and the database are untouched. Typical shortcuts:
+volumes and the database are untouched. Env files are never overwritten by
+`git pull` — they are gitignored.
 
 ```bash
-# Server-only change (no frontend rebuild)
+# Server-only change
 docker compose up -d --build server
 
-# Frontend-only change
+# Frontend change, or any client/.env edit
 docker compose up -d --build client
 
-# Changed .env — restart to pick it up (rebuild client if VITE_* changed)
+# server/.env edit — recreate, no rebuild needed
 docker compose up -d --force-recreate server
-```
-
-### Verify
-
-```bash
-curl -s localhost:8080/api/health
-docker compose logs -f --tail=100 server
 ```
 
 ### Roll back
@@ -129,6 +162,7 @@ docker compose up -d --build
 | Logs (all / one) | `docker compose logs -f` · `docker compose logs -f server` |
 | Restart one service | `docker compose restart server` |
 | Shell into the API | `docker compose exec server sh` |
+| Check env inside container | `docker compose exec server env \| sort` |
 | Mongo shell | `docker compose exec mongo mongosh docproject` |
 | Stop everything | `docker compose down` (volumes survive) |
 | Stop **and wipe data** | `docker compose down -v` ← destroys the database |
@@ -147,20 +181,18 @@ docker run --rm -v doc-tool_uploads:/data -v "$PWD":/out alpine \
   tar czf /out/uploads-$(date +%F).tar.gz -C /data .
 ```
 
-(The volume is prefixed with the compose project name — the directory name.
-Confirm with `docker volume ls`.)
+(The volume name is prefixed with the compose project name — the directory
+name. Confirm with `docker volume ls`.)
 
 ---
 
-## Notes and gotchas
+## Notes
 
 - **Using MongoDB Atlas instead of the bundled container:** put the SRV string
-  in `MONGODB_URI`, then drop the `mongo` service and the `depends_on` block
+  in `server/.env`, then drop the `mongo` service and the `depends_on` block
   from `docker-compose.yml`. If the host can't resolve SRV records, set
   `MONGODB_DNS_SERVERS=8.8.8.8,1.1.1.1`.
-- **`VITE_*` values are compile-time.** Changing them requires
-  `docker compose up -d --build client`, not a restart.
-- **Client build needs outbound network** — `xlsx` is installed from
+- **The client build needs outbound network** — `xlsx` installs from
   `cdn.sheetjs.com`, not the npm registry.
 - **Existing screenshots from the old `/var/www/doc360tool` deploy** need
   copying into the volume once:

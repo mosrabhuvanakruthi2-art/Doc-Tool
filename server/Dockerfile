@@ -8,12 +8,16 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
+# server/.env is NOT copied in (see .dockerignore) — compose injects it at
+# runtime with env_file, so one file serves both local dev and the container.
 COPY . .
 
-# Uploads live on a volume mounted here (see ASSETS_DIR / compose).
+# Uploads live on a volume mounted here (ASSETS_DIR).
 RUN mkdir -p /app/data/public/screenshots /app/data/documents \
  && chown -R node:node /app/data
 ENV ASSETS_DIR=/app/data
+# Lets the startup check give container-specific advice (e.g. localhost vs mongo).
+ENV RUNNING_IN_DOCKER=1
 
 USER node
 EXPOSE 5000

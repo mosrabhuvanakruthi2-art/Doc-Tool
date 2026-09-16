@@ -1,6 +1,7 @@
 node_modules/
 .env
 !.env.example
+!*/.env.example
 server/assets/public/
 server/assets/documents/
 dist/

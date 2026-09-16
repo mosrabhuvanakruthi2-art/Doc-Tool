@@ -17,14 +17,15 @@ services:
     build:
       context: ./server
     restart: unless-stopped
+    # The same server/.env you use locally. Nothing is baked into the image.
     env_file:
-      - .env
+      - ./server/.env
     environment:
+      # Fixed inside the container so nginx and the healthcheck always agree,
+      # regardless of the PORT you use for local dev. Overrides env_file.
       NODE_ENV: production
       PORT: "5000"
       ASSETS_DIR: /app/data
-      # Ignored when MONGODB_URI is set in .env (e.g. Atlas).
-      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/docproject}
     volumes:
       - uploads:/app/data
     depends_on:
@@ -35,14 +36,12 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 40s
 
   client:
     build:
+      # Reads client/.env during the build (Vite inlines VITE_* into the bundle).
       context: ./client
-      args:
-        VITE_AZURE_CLIENT_ID: ${VITE_AZURE_CLIENT_ID:-}
-        VITE_AZURE_TENANT_ID: ${VITE_AZURE_TENANT_ID:-}
     restart: unless-stopped
     ports:
       # Bound to loopback: put the host's nginx/Caddy in front for TLS.

@@ -1,7 +1,9 @@
 node_modules
 npm-debug.log
-.env
-.env.*
 assets/
 Dockerfile
 .dockerignore
+# server/.env is not copied into the image — compose injects it at runtime via
+# env_file, so the same file works for local dev and for the container.
+.env
+.env.*

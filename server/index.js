@@ -38,6 +38,41 @@ const SCREENSHOT_UPLOAD_LIMIT = Number(process.env.SCREENSHOT_UPLOAD_LIMIT || 50
 const CLOUD_INFO_MAX_PAGES = Number(process.env.CLOUD_INFO_MAX_PAGES || 50);
 const CLOUD_INFO_MAX_IMAGES = Number(process.env.CLOUD_INFO_MAX_IMAGES || 200);
 
+// --------------- Environment check ---------------
+//
+// Fail fast on a misconfigured environment instead of starting a server that
+// silently cannot verify a token or reach the database. Locally these come
+// from server/.env via dotenv; in Docker compose passes that same file in
+// with env_file, so there is one source of truth either way.
+const REQUIRED_ENV = ['MONGODB_URI', 'JWT_SECRET'];
+const missingEnv = REQUIRED_ENV.filter((k) => !String(process.env[k] || '').trim());
+if (missingEnv.length) {
+  console.error(`[config] Missing required environment variables: ${missingEnv.join(', ')}`);
+  console.error('[config] Put them in server/.env (Docker reads the same file via env_file).');
+  process.exit(1);
+}
+
+// Inside a container "localhost" is the container itself — not the host and
+// not the mongo service. This is the most common first-deploy failure, so name
+// it rather than letting the connection time out with a DNS-looking error.
+if (process.env.RUNNING_IN_DOCKER === '1'
+    && /(\/\/|@)(localhost|127\.0\.0\.1)[:/]/.test(process.env.MONGODB_URI)) {
+  console.error('[config] MONGODB_URI points at localhost, which inside a container is the container itself.');
+  console.error('[config] Use the compose service name: mongodb://mongo:27017/docproject');
+  process.exit(1);
+}
+
+// Not fatal — the app runs without them — but each one silently disables a
+// feature, so say so once at boot instead of failing mysteriously later.
+for (const [key, effect] of [
+  ['ADMIN_EMAIL', 'local admin login is disabled'],
+  ['ADMIN_PASSWORD', 'local admin login is disabled'],
+  ['FRONTEND_URL', "CORS falls back to http://localhost:4002 and will block your real domain"],
+  ['AZURE_CLIENT_ID', 'Microsoft sign-in is disabled'],
+]) {
+  if (!String(process.env[key] || '').trim()) console.warn(`[config] ${key} is not set — ${effect}.`);
+}
+
 app.disable('x-powered-by');
 
 // Security headers. CSP is scoped to what the app actually loads: its own

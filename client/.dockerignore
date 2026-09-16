@@ -1,7 +1,8 @@
 node_modules
 dist
 npm-debug.log
-.env
-.env.*
 Dockerfile
 .dockerignore
+# NOTE: client/.env is deliberately NOT ignored — Vite reads it during the
+# build stage to inline VITE_* into the bundle. It never reaches the final
+# nginx image, which contains only dist/.

@@ -15,7 +15,7 @@ const FILE_ICON = (
   </svg>
 );
 
-const GRIP = <span className="doc-tree-grip" title="Drag to move or reorder">⠿</span>;
+const GRIP = <span className="doc-tree-grip" title="Drag to reorder">⠿</span>;
 
 const CHEVRON = (expanded) => (
   <svg className={`doc-tree-chevron ${expanded ? 'expanded' : ''}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
@@ -49,7 +49,7 @@ function DocumentsAdmin({ onChanged }) {
 
   // Drag state: what is being dragged, and where it would land.
   const [drag, setDrag] = useState(null);   // { kind: 'folder' | 'doc', id, parentId, name }
-  const [hint, setHint] = useState(null);   // { id, mode: 'before' | 'after' | 'inside' }
+  const [hint, setHint] = useState(null);   // { id, mode: 'before' | 'after' }
 
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
@@ -186,37 +186,32 @@ function DocumentsAdmin({ onChanged }) {
     setDeleting(false);
   };
 
-  // ---------------- drag and drop ----------------
+  // ---------------- drag and drop (reorder only) ----------------
   //
-  // One gesture covers both jobs the Move and Reorder buttons used to do: drop
-  // on the upper or lower edge of a row to sit before or after it, drop in the
-  // middle of a folder to go inside it. Folders and documents keep separate
+  // Dragging a row repositions it among its own siblings — drop above or below a
+  // row to sit before or after it. It never moves an item into another folder;
+  // folders and documents keep separate
   // orders within a parent, so a drop beside the other kind lands at the end of
   // its own list rather than pretending the two interleave.
 
   const rowIdOf = (kind, row) => (kind === 'folder' ? row.id : row._id);
 
-  const dropZone = (e, allowInside) => {
+  // Drag reorders only — the drop lands before or after the row, never inside it.
+  const dropZone = (e) => {
     const box = e.currentTarget.getBoundingClientRect();
-    const y = e.clientY - box.top;
-    if (!allowInside) return y < box.height / 2 ? 'before' : 'after';
-    if (y < box.height * 0.3) return 'before';
-    if (y > box.height * 0.7) return 'after';
-    return 'inside';
+    return (e.clientY - box.top) < box.height / 2 ? 'before' : 'after';
   };
 
-  // A folder cannot be dropped into itself or into its own subtree, and nothing
-  // can be dropped onto itself.
-  const dropAllowed = (targetKind, targetId, dropMode) => {
+  const parentOf = (kind, row) =>
+    kind === 'folder' ? (row.parentId || '') : (row.folderId ? String(row.folderId) : '');
+
+  // Reorder only: a row can be repositioned among its own siblings (same kind,
+  // same parent). Dragging never moves anything into another folder.
+  const dropAllowed = (targetKind, targetRow) => {
     if (!drag) return false;
-    if (drag.kind === targetKind && drag.id === targetId) return false;
-    if (drag.kind !== 'folder' || targetKind !== 'folder') return true;
-    if (dropMode === 'inside') {
-      return targetId !== drag.id && !descendantsOf(drag.id).includes(targetId);
-    }
-    const target = folders.find(f => f.id === targetId);
-    const destParent = target ? (target.parentId || '') : '';
-    return destParent !== drag.id && !descendantsOf(drag.id).includes(destParent);
+    if (drag.kind !== targetKind) return false;
+    if (drag.id === rowIdOf(targetKind, targetRow)) return false;
+    return (drag.parentId || '') === parentOf(targetKind, targetRow);
   };
 
   const dragProps = (kind, row, parentId) => ({
@@ -232,12 +227,10 @@ function DocumentsAdmin({ onChanged }) {
 
   const dropProps = (kind, row) => {
     const id = rowIdOf(kind, row);
-    const allowInside = kind === 'folder';
     return {
       onDragOver: (e) => {
-        if (!drag) return;
-        const zone = dropZone(e, allowInside);
-        if (!dropAllowed(kind, id, zone)) return;
+        if (!drag || !dropAllowed(kind, row)) return;
+        const zone = dropZone(e);
         e.preventDefault();
         e.stopPropagation();
         e.dataTransfer.dropEffect = 'move';
@@ -245,9 +238,8 @@ function DocumentsAdmin({ onChanged }) {
       },
       onDragLeave: () => setHint(prev => (prev && prev.id === id ? null : prev)),
       onDrop: (e) => {
-        if (!drag) return;
-        const zone = dropZone(e, allowInside);
-        if (!dropAllowed(kind, id, zone)) return;
+        if (!drag || !dropAllowed(kind, row)) return;
+        const zone = dropZone(e);
         e.preventDefault();
         e.stopPropagation();
         applyDrop(kind, row, zone);
@@ -331,54 +323,6 @@ function DocumentsAdmin({ onChanged }) {
       showToast(err.message, 'error');
       await fetchAll();
     }
-  };
-
-  const moveToRoot = async (moving) => {
-    try {
-      const url = moving.kind === 'folder'
-        ? `/api/document-folders/${moving.id}`
-        : `/api/documents/${moving.id}/folder`;
-      const body = moving.kind === 'folder' ? { parentId: null } : { folderId: null };
-      const res = await fetch(url, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || 'Move failed');
-      showToast(`Moved "${moving.name}" to the top level`);
-      await fetchAll();
-      notifyChanged();
-    } catch (err) { showToast(err.message, 'error'); }
-  };
-
-  // Dragging something out of a folder needs somewhere to drop it, so this strip
-  // appears at the bottom of the tree for the duration of such a drag.
-  const renderRootDropZone = () => {
-    if (!drag || (drag.parentId || '') === '') return null;
-    const active = hint && hint.id === '__root__';
-    return (
-      <div
-        className={`doc-tree-rootdrop ${active ? 'active' : ''}`}
-        onDragOver={(e) => {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'move';
-          setHint({ id: '__root__', mode: 'inside' });
-        }}
-        onDragLeave={() => setHint(prev => (prev && prev.id === '__root__' ? null : prev))}
-        onDrop={(e) => {
-          e.preventDefault();
-          const moving = drag;
-          setDrag(null);
-          setHint(null);
-          // Lands at the end of the top level; dragging between rows is how you
-          // place it exactly from there.
-          if (moving) moveToRoot(moving);
-        }}
-      >
-        Drop here to move to the top level
-      </div>
-    );
   };
 
   // ---------------- document form ----------------
@@ -849,7 +793,6 @@ function DocumentsAdmin({ onChanged }) {
               {newFolderIn === '' && renderNewFolderInput(0)}
               {rootFolders.map(folder => renderFolderNode(folder, 0))}
               {rootDocs.map(doc => renderDocRow(doc, 0))}
-              {renderRootDropZone()}
             </div>
           </>
         )}

@@ -520,6 +520,12 @@ async function getGraphAccessToken() {
 
 async function sendMail(to, subject, htmlBody) {
   try {
+    // `to` may be a single address or an array of addresses.
+    const recipients = (Array.isArray(to) ? to : [to])
+      .map(a => String(a || '').trim())
+      .filter(Boolean);
+    if (!recipients.length) { console.error('sendMail: no recipients'); return; }
+
     const senderEmail = 'bhuvana.mosra@cloudfuze.com';
     const token = await getGraphAccessToken();
 
@@ -530,7 +536,7 @@ async function sendMail(to, subject, htmlBody) {
         message: {
           subject,
           body: { contentType: 'HTML', content: htmlBody },
-          toRecipients: [{ emailAddress: { address: to } }],
+          toRecipients: recipients.map(address => ({ emailAddress: { address } })),
         },
         saveToSentItems: false,
       },
@@ -540,11 +546,27 @@ async function sendMail(to, subject, htmlBody) {
     if (result.status !== 202 && result.status !== 200) {
       console.error('Graph sendMail error:', result.status, result.data);
     } else {
-      console.log(`Email sent via Graph to ${to}`);
+      console.log(`Email sent via Graph to ${recipients.join(', ')}`);
     }
   } catch (err) {
     console.error('sendMail error:', err.message);
   }
+}
+
+// Everyone who should be notified of a new access request: the environment
+// admin plus every active admin user. Deduplicated and lower-cased so a person
+// who is both never gets two copies.
+async function adminRecipients() {
+  const emails = new Set();
+  if (ADMIN_EMAIL) emails.add(ADMIN_EMAIL.toLowerCase().trim());
+  try {
+    const admins = await User.find({ role: 'admin', isActive: { $ne: false } })
+      .select('email').lean();
+    admins.forEach(a => { if (a.email) emails.add(String(a.email).toLowerCase().trim()); });
+  } catch (err) {
+    console.error('adminRecipients error:', err.message);
+  }
+  return [...emails];
 }
 
 // --------------- Access Requests ---------------
@@ -637,7 +659,7 @@ app.post('/api/access-requests', requireAuth, async (req, res) => {
       // One email for the whole batch rather than one per document.
       const list = created.map(c => `<li>${c.name}</li>`).join('');
       await sendMail(
-        ADMIN_EMAIL,
+        await adminRecipients(),
         `Document Access Request from ${name || email}`,
         `<p><strong>${name || email}</strong> (${email}) has requested access to ${created.length} document(s) on Migration Docs:</p>
          <ul>${list}</ul>
@@ -685,7 +707,7 @@ app.post('/api/access-requests', requireAuth, async (req, res) => {
     const request = existing || await AccessRequest.create({ email, name, folderId: folderId || null, folderName });
 
     await sendMail(
-      ADMIN_EMAIL,
+      await adminRecipients(),
       `Documents Access Request from ${name || email}`,
       `<p><strong>${name || email}</strong> (${email}) has requested access to <strong>${folderName || 'the Documents tab'}</strong> on Migration Docs.</p>
        <p>Log in to the <a href="${process.env.FRONTEND_URL || 'http://localhost:4002'}/admin?tab=users">Admin Panel → Users</a> to approve or deny this request.</p>`
@@ -3178,6 +3200,73 @@ app.post('/api/documents', requireAdmin, async (req, res) => {
   } catch (err) { sendServerError(res, err); }
 });
 
+// Viewer-safe MIME types that may be streamed inline for in-browser preview.
+// Anything not listed here is always served as an attachment (see static mount
+// below). Types are inert in a browser (images, audio, video, plain text) or
+// rendered by the built-in PDF viewer — never as executable HTML in our origin.
+const INLINE_TYPES = {
+  '.pdf': 'application/pdf',
+  // images
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.avif': 'image/avif',
+  '.ico': 'image/x-icon', '.apng': 'image/apng', '.jfif': 'image/jpeg',
+  // video
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.ogv': 'video/ogg', '.mov': 'video/quicktime',
+  '.m4v': 'video/mp4', '.mpeg': 'video/mpeg', '.mpg': 'video/mpeg',
+  // audio
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg', '.opus': 'audio/ogg', '.aac': 'audio/aac', '.flac': 'audio/flac', '.weba': 'audio/webm',
+  // text (served as text/plain, never text/html, so nothing executes)
+  '.txt': 'text/plain', '.csv': 'text/plain', '.log': 'text/plain', '.md': 'text/plain',
+  '.markdown': 'text/plain', '.json': 'text/plain', '.xml': 'text/plain', '.yaml': 'text/plain',
+  '.yml': 'text/plain', '.ini': 'text/plain', '.sql': 'text/plain', '.sh': 'text/plain',
+  '.ps1': 'text/plain', '.html': 'text/plain', '.htm': 'text/plain',
+};
+
+// Inline view (?inline=1): stream a viewer-safe file for in-browser preview
+// instead of forcing a download. Restricted to the types above, inside docsDir;
+// everything else falls through to the attachment-only static mount below.
+app.get('/assets/documents/:filename', (req, res, next) => {
+  if (req.query.inline !== '1') return next();
+  const name = path.basename(String(req.params.filename || ''));
+  const ext = path.extname(name).toLowerCase();
+  const type = INLINE_TYPES[ext];
+  if (!type) return next();
+  const filePath = path.join(docsDir, name);
+  if (!filePath.startsWith(docsDir) || !fs.existsSync(filePath)) return next();
+
+  // nosniff + explicit type: the browser treats the file only as that type,
+  // never as an executable document in our origin. SVG is sandboxed so an
+  // embedded script cannot run when the URL is opened directly.
+  let csp = "default-src 'none'";
+  if (ext === '.pdf') csp = "default-src 'none'; object-src 'self'; plugin-types application/pdf";
+  else if (ext === '.svg') csp = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Content-Type', type);
+  res.set('Content-Disposition', 'inline');
+  res.set('Content-Security-Policy', csp);
+  res.set('Accept-Ranges', 'bytes');
+
+  // Range support so audio/video can seek and stream rather than fully buffer.
+  const stat = fs.statSync(filePath);
+  const range = req.headers.range;
+  if (range && /^bytes=\d*-\d*$/.test(range)) {
+    const [s, e] = range.replace('bytes=', '').split('-');
+    const start = s ? parseInt(s, 10) : 0;
+    const end = e ? parseInt(e, 10) : stat.size - 1;
+    if (start > end || end >= stat.size) {
+      res.set('Content-Range', `bytes */${stat.size}`);
+      return res.status(416).end();
+    }
+    res.status(206);
+    res.set('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+    res.set('Content-Length', String(end - start + 1));
+    return fs.createReadStream(filePath, { start, end }).pipe(res);
+  }
+  res.set('Content-Length', String(stat.size));
+  fs.createReadStream(filePath).pipe(res);
+});
+
 app.use('/assets/documents', express.static(docsDir, {
   setHeaders: (res) => {
     // Uploaded documents are downloads, never pages: force a save dialog and
@@ -3188,30 +3277,33 @@ app.use('/assets/documents', express.static(docsDir, {
   },
 }));
 
-const DOC_UPLOAD_TYPES = {
-  'application/pdf': '.pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
-  'application/vnd.ms-excel': '.xls',
+// Any file type may be uploaded. The on-disk name is random; the extension is
+// taken from the uploaded filename but hard-limited to a short alphanumeric
+// string, so nothing exotic or path-like lands on disk. Files are always served
+// with nosniff, and only known viewer-safe types are ever served inline.
+const safeUploadExt = (originalname) => {
+  const ext = path.extname(String(originalname || '')).toLowerCase();
+  return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : '.bin';
 };
 const docStorage = multer.diskStorage({
   destination: (req, file, cb) => { cb(null, docsDir); },
   filename: (req, file, cb) => {
-    // A random server-generated name with an extension derived from the accepted
-    // MIME type — never from the uploaded filename, so an attacker cannot choose
-    // what the file is called or how it is typed on disk.
-    const ext = DOC_UPLOAD_TYPES[file.mimetype] || '.bin';
-    cb(null, `${crypto.randomBytes(16).toString('hex')}${ext}`);
+    cb(null, `${crypto.randomBytes(16).toString('hex')}${safeUploadExt(file.originalname)}`);
   },
 });
 const docUpload = multer({
   storage: docStorage,
-  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
-  fileFilter: (req, file, cb) => {
-    if (DOC_UPLOAD_TYPES[file.mimetype]) cb(null, true);
-    else cb(new Error('Only PDF, DOCX or XLSX files are allowed'));
-  },
+  // Generous ceiling so videos and large PDFs go through; tune with DOC_MAX_UPLOAD_MB.
+  limits: { fileSize: Number(process.env.DOC_MAX_UPLOAD_MB || 200) * 1024 * 1024, files: 1 },
 });
+
+// Text-like uploads are read into editable HTML content so they open inline in
+// the editor (like DOCX), rather than being download-only binaries.
+// csv/tsv are handled as spreadsheets (file-backed, opened in the grid editor),
+// so they are intentionally NOT in this text-extraction list.
+const TEXT_UPLOAD_EXTS = ['txt', 'log', 'md', 'markdown', 'json', 'xml', 'yaml', 'yml', 'ini', 'sql', 'ps1', 'sh', 'html', 'htm'];
+const escapeHtmlText = (s) => String(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 app.post('/api/documents/upload', uploadLimiter, requireAdmin, docUpload.single('file'), async (req, res) => {
   try {
@@ -3247,6 +3339,13 @@ app.post('/api/documents/upload', uploadLimiter, requireAdmin, docUpload.single(
         content = result.value;
         fileType = 'docx';
       } catch (_) { fileType = 'docx'; }
+    } else if (TEXT_UPLOAD_EXTS.includes(ext)) {
+      // Read the text into an editable <pre> block so it opens inline for edit.
+      try {
+        const raw = fs.readFileSync(req.file.path, 'utf8');
+        content = '<pre>' + escapeHtmlText(raw) + '</pre>';
+        fileType = ext;
+      } catch (_) { fileType = ext || 'manual'; }
     }
 
     const count = await DocModel.countDocuments({ folderId: uploadFolderId, isDeleted: { $ne: true } });
@@ -3258,6 +3357,38 @@ app.post('/api/documents/upload', uploadLimiter, requireAdmin, docUpload.single(
       details: { size: req.file && req.file.size, mimetype: req.file && req.file.mimetype },
     });
     res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// Replace the file bytes on an existing document, keeping its identity (name,
+// slug, folder, order). Used by the spreadsheet editor and any "save edited
+// file" flow. The old file is removed from disk.
+app.post('/api/documents/:id/file', uploadLimiter, requireAdmin, docUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const doc = await DocModel.findById(req.params.id);
+    if (!doc || doc.isDeleted) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return res.status(404).json({ error: 'Not found' });
+    }
+    const ext = path.extname(req.file.originalname).toLowerCase().replace('.', '');
+    const newUrl = `/assets/documents/${req.file.filename}`;
+    // Delete the previous file (best-effort), then point the doc at the new one.
+    if (doc.fileUrl && doc.fileUrl.startsWith('/assets/documents/')) {
+      const oldPath = path.join(docsDir, path.basename(doc.fileUrl));
+      if (oldPath.startsWith(docsDir)) { try { fs.unlinkSync(oldPath); } catch (_) {} }
+    }
+    doc.fileUrl = newUrl;
+    doc.fileType = ext || doc.fileType;
+    doc.content = '';
+    await doc.save();
+    await audit(req, {
+      action: 'update.document_file', category: 'content',
+      targetType: 'document', targetId: String(doc._id), targetName: doc.name,
+      summary: `Replaced file for ${doc.name}`,
+      details: { size: req.file.size, mimetype: req.file.mimetype },
+    });
+    res.json({ success: true, item: { ...doc.toObject(), id: doc._id.toString() } });
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -3285,6 +3416,14 @@ app.put('/api/documents/:id', requireAdmin, async (req, res) => {
     if (content !== undefined) update.content = sanitizeHtml(content);
     if (fileType !== undefined) update.fileType = fileType;
     if (req.body.folderId !== undefined) update.folderId = nextFolderId;
+    // Replacing a file-backed doc with editable content: drop the old file.
+    if (req.body.clearFile && before.fileUrl) {
+      if (before.fileUrl.startsWith('/assets/documents/')) {
+        const oldPath = path.join(docsDir, path.basename(before.fileUrl));
+        if (oldPath.startsWith(docsDir)) { try { fs.unlinkSync(oldPath); } catch (_) {} }
+      }
+      update.fileUrl = '';
+    }
     const item = await DocModel.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ error: 'Not found' });
     await recordRevision('document', before, item, req);

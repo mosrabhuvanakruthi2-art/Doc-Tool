@@ -5,7 +5,9 @@ const documentSchema = new mongoose.Schema({
   slug: { type: String, required: true, unique: true },
   content: { type: String, default: '' },
   fileUrl: { type: String, default: '' },
-  fileType: { type: String, enum: ['pdf', 'xlsx', 'docx', 'manual', ''], default: '' },
+  // Any uploaded extension (pdf, docx, png, mp4, csv, …) or 'manual' for
+  // rich-text documents. Kept as a short free-form string, lower-cased.
+  fileType: { type: String, default: '', lowercase: true, trim: true, maxlength: 12 },
   // null = the document sits at the root of Documents, which is where every
   // document created before folders existed stays.
   folderId: { type: mongoose.Schema.Types.ObjectId, ref: 'DocumentFolder', default: null, index: true },

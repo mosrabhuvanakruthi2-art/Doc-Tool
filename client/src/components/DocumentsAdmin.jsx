@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import mammoth from 'mammoth';
 import { showToast } from './Toast';
+import FilePreview, { previewKindOf, TEXT_EXTS } from './FilePreview';
+import SpreadsheetEditor from './SpreadsheetEditor';
+
+// Spreadsheets open in the grid editor (edit cells, save back to the file).
+const SHEET_EXTS = ['xlsx', 'xls', 'xlsm', 'csv', 'tsv'];
 
 const FOLDER_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -17,6 +22,12 @@ const FILE_ICON = (
 
 const GRIP = <span className="doc-tree-grip" title="Drag to reorder">⠿</span>;
 
+// Text-like files open straight in the editor for inline editing; DOCX converts
+// via mammoth; everything else uploads as a file and previews inline where the
+// browser can. Uploads are otherwise unrestricted.
+const escapeText = (s) => String(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 const CHEVRON = (expanded) => (
   <svg className={`doc-tree-chevron ${expanded ? 'expanded' : ''}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="9 18 15 12 9 6" />
@@ -31,7 +42,24 @@ function DocumentsAdmin({ onChanged }) {
   const [name, setName] = useState('');
   const [content, setContent] = useState('');
   const [fileType, setFileType] = useState('manual');
+  const [fileUrl, setFileUrl] = useState('');   // saved uploaded file, if any
   const [formFolderId, setFormFolderId] = useState('');
+  // A chosen file staged for preview; it uploads only when the user hits Save.
+  const [pendingFile, setPendingFile] = useState(null);
+  const [pendingPreview, setPendingPreview] = useState(null); // { url, kind, ext, name }
+  // Spreadsheet being edited in the grid: { file?, url?, ext, replaceId? }.
+  const [sheetEdit, setSheetEdit] = useState(null);
+  const sheetRef = useRef(null);
+  // Multiple files staged in Create mode: [{ id, file, ext, kind, url, name }].
+  const [pendingBatch, setPendingBatch] = useState(null);
+  const [batchProgress, setBatchProgress] = useState(null); // { done, total }
+  const [dragOver, setDragOver] = useState(false);          // upload drop-zone highlight
+  // Move a document or folder into another folder: { kind, id, name, parentId }.
+  const [moveTarget, setMoveTarget] = useState(null);
+  const [moveDest, setMoveDest] = useState('');
+  const [moving, setMoving] = useState(false);
+  // The last saved/loaded state, so Cancel can revert unsaved name/folder edits.
+  const original = useRef(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -50,6 +78,7 @@ function DocumentsAdmin({ onChanged }) {
   // Drag state: what is being dragged, and where it would land.
   const [drag, setDrag] = useState(null);   // { kind: 'folder' | 'doc', id, parentId, name }
   const [hint, setHint] = useState(null);   // { id, mode: 'before' | 'after' }
+  const [reorderMode, setReorderMode] = useState(false); // drag-to-reorder is opt-in, off by default
 
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
@@ -110,6 +139,66 @@ function DocumentsAdmin({ onChanged }) {
     };
     walk(folderId);
     return out;
+  };
+
+  // ---------------- move a document / folder ----------------
+  const openMove = (kind, row) => {
+    const id = kind === 'folder' ? row.id : row._id;
+    const parentId = kind === 'folder'
+      ? (row.parentId || '')
+      : (row.folderId ? String(row.folderId) : '');
+    setMoveTarget({ kind, id, name: row.name, parentId });
+    setMoveDest(parentId);
+  };
+
+  const handleMove = async () => {
+    if (!moveTarget) return;
+    setMoving(true);
+    try {
+      const { kind, id } = moveTarget;
+      const url = kind === 'folder' ? `/api/document-folders/${id}` : `/api/documents/${id}`;
+      const body = kind === 'folder' ? { parentId: moveDest || null } : { folderId: moveDest || null };
+      const res = await fetch(url, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'Move failed');
+      showToast(`Moved "${moveTarget.name}"`);
+      if (moveDest) setExpanded(prev => ({ ...prev, [moveDest]: true }));
+      setMoveTarget(null);
+      await fetchAll();
+      notifyChanged();
+    } catch (err) { showToast(err.message, 'error'); }
+    setMoving(false);
+  };
+
+  const renderMoveModal = () => {
+    if (!moveTarget) return null;
+    // A folder can't move into itself or its own descendants.
+    const invalid = moveTarget.kind === 'folder'
+      ? new Set([moveTarget.id, ...descendantsOf(moveTarget.id)])
+      : new Set();
+    const options = folderOptions.filter(o => !invalid.has(o.id));
+    return (
+      <div className="permanent-delete-modal" onClick={() => !moving && setMoveTarget(null)}>
+        <div className="permanent-delete-card" onClick={e => e.stopPropagation()}>
+          <h4>Move {moveTarget.kind === 'folder' ? 'Folder' : 'Document'}</h4>
+          <p>Move <strong>&quot;{moveTarget.name}&quot;</strong> to:</p>
+          <select className="doc-move-select" value={moveDest} onChange={e => setMoveDest(e.target.value)} autoFocus>
+            <option value="">Top level</option>
+            {options.map(o => (
+              <option key={o.id} value={o.id}>{'  '.repeat(o.depth) + (o.depth ? '└ ' : '') + o.name}</option>
+            ))}
+          </select>
+          <div className="permanent-delete-actions">
+            <button className="btn-save" disabled={moving || moveDest === moveTarget.parentId} onClick={handleMove}>
+              {moving ? 'Moving…' : 'Move'}
+            </button>
+            <button className="btn-cancel" onClick={() => setMoveTarget(null)} disabled={moving}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const toggleFolder = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
@@ -214,7 +303,7 @@ function DocumentsAdmin({ onChanged }) {
     return (drag.parentId || '') === parentOf(targetKind, targetRow);
   };
 
-  const dragProps = (kind, row, parentId) => ({
+  const dragProps = (kind, row, parentId) => (!reorderMode ? {} : {
     draggable: true,
     onDragStart: (e) => {
       e.stopPropagation();
@@ -331,10 +420,18 @@ function DocumentsAdmin({ onChanged }) {
     setName('');
     setContent('');
     setFileType('manual');
+    setFileUrl('');
     setFormFolderId('');
     setSelectedId('');
     setIsEditing(false);
     setDeleteConfirm(null);
+    if (pendingPreview && pendingPreview.url) URL.revokeObjectURL(pendingPreview.url);
+    if (pendingBatch) pendingBatch.forEach(it => it.url && URL.revokeObjectURL(it.url));
+    setPendingFile(null);
+    setPendingPreview(null);
+    setSheetEdit(null);
+    setPendingBatch(null);
+    setBatchProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -355,20 +452,73 @@ function DocumentsAdmin({ onChanged }) {
       setName(data.item.name);
       setContent(data.item.content || '');
       setFileType(data.item.fileType || 'manual');
+      setFileUrl(data.item.fileUrl || '');
       setFormFolderId(data.item.folderId ? String(data.item.folderId) : '');
+      // A spreadsheet doc opens in the grid editor, loaded from its saved file.
+      const et = String(data.item.fileType || '').toLowerCase();
+      if (data.item.fileUrl && SHEET_EXTS.includes(et)) {
+        setSheetEdit({ url: data.item.fileUrl, ext: et, replaceId: data.item.id || data.item._id });
+      } else {
+        setSheetEdit(null);
+      }
+      snapshotOriginal(data.item);
       setMode('edit');
-      setIsEditing(false);
+      // Open straight into edit mode — a single click on Edit starts editing.
+      setIsEditing(true);
+      const html = data.item.content || '';
+      if (html) setTimeout(() => { if (editorRef.current) editorRef.current.innerHTML = html; }, 0);
     } catch (err) { showToast(err.message, 'error'); }
     setLoading(false);
   };
 
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  // Remember the saved state so Cancel can undo unsaved edits.
+  const snapshotOriginal = (item) => {
+    original.current = {
+      name: item.name || '',
+      folderId: item.folderId ? String(item.folderId) : '',
+      content: item.content || '',
+      fileType: item.fileType || 'manual',
+      fileUrl: item.fileUrl || '',
+    };
+  };
+
+  const handleFileUpload = (e) => processFiles(Array.from(e.target.files || []));
+
+  const processFiles = async (files) => {
+    if (!files.length) return;
+
+    // Choosing any new file clears whatever was previously staged/open, so the
+    // grid, text editor and file preview never fight over the same Save.
+    const clearStaged = () => {
+      if (pendingPreview && pendingPreview.url) URL.revokeObjectURL(pendingPreview.url);
+      if (pendingBatch) pendingBatch.forEach(it => it.url && URL.revokeObjectURL(it.url));
+      setPendingPreview(null);
+      setPendingFile(null);
+      setSheetEdit(null);
+      setPendingBatch(null);
+    };
+
+    // Multiple files in Create mode: stage them all, each previewed, "Save All".
+    if (mode === 'create' && files.length > 1) {
+      clearStaged();
+      const batch = files.map((f, i) => {
+        const fext = f.name.split('.').pop().toLowerCase();
+        const kind = previewKindOf(fext);
+        const url = ['image', 'pdf', 'video', 'audio'].includes(kind) ? URL.createObjectURL(f) : '';
+        return { id: i + '_' + f.name, file: f, ext: fext, kind, url, name: f.name.replace(/\.[^.]+$/, '') };
+      });
+      setPendingBatch(batch);
+      setIsEditing(true);
+      showToast(`${files.length} files ready — review and click Save All`);
+      return;
+    }
+
+    const file = files[0];
     const ext = file.name.split('.').pop().toLowerCase();
 
     if (ext === 'docx') {
       try {
+        clearStaged();
         const arrayBuffer = await file.arrayBuffer();
         const options = {
           convertImage: mammoth.images.imgElement(function (image) {
@@ -380,38 +530,53 @@ function DocumentsAdmin({ onChanged }) {
         const result = await mammoth.convertToHtml({ arrayBuffer }, options);
         setContent(result.value);
         setFileType('docx');
+        setFileUrl('');
         if (editorRef.current) editorRef.current.innerHTML = result.value;
-        showToast('DOCX parsed successfully');
+        showToast('DOCX parsed — edit and Save');
       } catch (err) { showToast('Failed to parse: ' + err.message, 'error'); }
-    } else if (ext === 'pdf' || ext === 'xlsx' || ext === 'xls') {
+    } else if (SHEET_EXTS.includes(ext)) {
+      // Spreadsheets open in the grid editor; the edited file saves on Save.
+      clearStaged();
+      setSheetEdit({ file, ext, replaceId: mode === 'edit' ? selectedId : undefined });
+      setFileType(ext);
+      setContent('');
+      if (!name.trim()) setName(file.name.replace(/\.[^.]+$/, ''));
+      setIsEditing(true);
+      showToast(`${ext.toUpperCase()} opened — edit cells, then click Save`);
+    } else if (TEXT_EXTS.includes(ext)) {
+      // Read text files straight into the editor so they open inline for editing.
       try {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('name', name || file.name);
-        if (formFolderId) formData.append('folderId', formFolderId);
-        const res = await fetch('/api/documents/upload', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
-        showToast('File uploaded successfully');
-        await fetchAll();
-        notifyChanged();
-        setSelectedId(data.item.id || data.item._id);
-        setName(data.item.name);
-        setContent(data.item.content || '');
-        setFileType(data.item.fileType || ext);
-        setFormFolderId(data.item.folderId ? String(data.item.folderId) : '');
-        setMode('edit');
-        setIsEditing(false);
-      } catch (err) { showToast(err.message, 'error'); }
+        clearStaged();
+        const raw = await file.text();
+        const html = '<pre>' + escapeText(raw) + '</pre>';
+        setContent(html);
+        setFileType(ext);
+        setFileUrl('');
+        if (editorRef.current) editorRef.current.innerHTML = html;
+        showToast(`${ext.toUpperCase()} loaded — edit and Save`);
+      } catch (err) { showToast('Failed to read file: ' + err.message, 'error'); }
     } else {
-      showToast('Supported formats: .docx, .pdf, .xlsx', 'error');
+      // Everything else (pdf, images, audio, video, etc.): stage the file and
+      // preview it locally. It uploads (or replaces) only when the user Saves.
+      clearStaged();
+      const url = URL.createObjectURL(file);
+      setPendingFile(file);
+      setPendingPreview({ url, kind: previewKindOf(ext), ext, name: file.name });
+      setFileType(ext);
+      setContent('');
+      if (!name.trim()) setName(file.name.replace(/\.[^.]+$/, ''));
+      showToast(`${ext.toUpperCase()} ready — preview below, then click Save`);
     }
   };
 
   // Import a folder from the computer, recreating its structure under Documents
-  // and uploading each supported file into the matching folder. Folders that
-  // already exist (by name, in the same parent) are reused, not duplicated.
-  const DOC_EXTS = ['docx', 'pdf', 'xlsx', 'xls'];
+  // and uploading every file into the matching folder. Folders that already
+  // exist (by name, in the same parent) are reused, not duplicated. All file
+  // types are accepted; hidden/system files are skipped.
+  const isSkippableFile = (f) => {
+    const base = (f.name || '').split('/').pop();
+    return !base || base.startsWith('.') || base.toLowerCase() === 'thumbs.db' || base === 'desktop.ini';
+  };
 
   const createFolder = async (folderName, parentId) => {
     const res = await fetch('/api/document-folders', {
@@ -424,9 +589,9 @@ function DocumentsAdmin({ onChanged }) {
     return data.folder;
   };
 
-  const uploadOneFile = async (file, folderId) => {
+  const uploadOneFile = async (file, folderId, nameOverride) => {
     const ext = file.name.split('.').pop().toLowerCase();
-    const baseName = file.name.replace(/\.[^.]+$/, '');
+    const baseName = (nameOverride && nameOverride.trim()) || file.name.replace(/\.[^.]+$/, '');
     if (ext === 'docx') {
       const arrayBuffer = await file.arrayBuffer();
       const result = await mammoth.convertToHtml({ arrayBuffer }, {
@@ -437,6 +602,16 @@ function DocumentsAdmin({ onChanged }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: baseName, content: result.value, fileType: 'docx', folderId: folderId || null }),
+      });
+      const data = await res.json();
+      if (res.status === 409) { const e = new Error(data.error); e.duplicate = true; throw e; }
+      if (!res.ok || data.error) throw new Error(data.error || 'Upload failed');
+    } else if (TEXT_EXTS.includes(ext) && !SHEET_EXTS.includes(ext)) {
+      const raw = await file.text();
+      const res = await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: baseName, content: '<pre>' + escapeText(raw) + '</pre>', fileType: ext, folderId: folderId || null }),
       });
       const data = await res.json();
       if (res.status === 409) { const e = new Error(data.error); e.duplicate = true; throw e; }
@@ -456,8 +631,8 @@ function DocumentsAdmin({ onChanged }) {
   const handleFolderUpload = async (e) => {
     const picked = Array.from(e.target.files || []);
     e.target.value = '';
-    const files = picked.filter(f => DOC_EXTS.includes(f.name.split('.').pop().toLowerCase()));
-    if (!files.length) { showToast('No PDF, DOCX or XLSX files found in that folder', 'error'); return; }
+    const files = picked.filter(f => !isSkippableFile(f));
+    if (!files.length) { showToast('No files found in that folder', 'error'); return; }
 
     // Live snapshot of the tree so we reuse folders that already exist and the
     // ones we create in this run. Keyed by "parentId/childName".
@@ -510,19 +685,131 @@ function DocumentsAdmin({ onChanged }) {
   };
 
   const handleSave = async () => {
+    // Batch: several files staged in Create mode — create one document each.
+    if (pendingBatch) {
+      const named = pendingBatch.filter(it => it.name.trim());
+      if (!named.length) { showToast('Give each file a name', 'error'); return; }
+      const folderId = formFolderId || '';
+      setSaving(true);
+      setBatchProgress({ done: 0, total: pendingBatch.length });
+      let done = 0, dup = 0; const failed = [];
+      for (let i = 0; i < pendingBatch.length; i++) {
+        const it = pendingBatch[i];
+        try { await uploadOneFile(it.file, folderId, it.name); done++; }
+        catch (err) { if (err.duplicate) dup++; else failed.push(it.name); }
+        setBatchProgress({ done: i + 1, total: pendingBatch.length });
+      }
+      pendingBatch.forEach(it => it.url && URL.revokeObjectURL(it.url));
+      setPendingBatch(null);
+      setBatchProgress(null);
+      await fetchAll();
+      notifyChanged();
+      if (folderId) setExpanded(prev => ({ ...prev, [folderId]: true }));
+      showToast(
+        `Saved ${done} document${done !== 1 ? 's' : ''}`
+        + (dup ? `, skipped ${dup} duplicate${dup !== 1 ? 's' : ''}` : '')
+        + (failed.length ? `, ${failed.length} failed` : '') + '.',
+        failed.length ? 'error' : 'success',
+      );
+      resetForm();
+      setMode('list');
+      setSaving(false);
+      return;
+    }
+
     if (!name.trim()) { showToast('Name is required', 'error'); return; }
+
+    // A spreadsheet being edited in the grid: write the edited workbook and
+    // either replace the existing file or create a new document.
+    if (sheetEdit) {
+      if (!sheetRef.current) { showToast('Editor not ready', 'error'); return; }
+      setSaving(true);
+      try {
+        const { blob, fname } = sheetRef.current.getBlob();
+        const fd = new FormData();
+        fd.append('file', blob, fname);
+        fd.append('name', name.trim());
+        if (formFolderId) fd.append('folderId', formFolderId);
+        const endpoint = sheetEdit.replaceId
+          ? `/api/documents/${sheetEdit.replaceId}/file`
+          : '/api/documents/upload';
+        const res = await fetch(endpoint, { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || 'Save failed');
+        showToast(sheetEdit.replaceId ? 'Spreadsheet saved!' : 'Spreadsheet created!');
+        const newId = data.item.id || data.item._id;
+        // Keep the grid open (read-only) on the freshly saved file.
+        setSheetEdit({ url: data.item.fileUrl, ext: data.item.fileType || sheetEdit.ext, replaceId: newId });
+        setSelectedId(newId);
+        setName(data.item.name);
+        setContent('');
+        setFileType(data.item.fileType || sheetEdit.ext);
+        setFileUrl(data.item.fileUrl || '');
+        setFormFolderId(data.item.folderId ? String(data.item.folderId) : '');
+        snapshotOriginal(data.item);
+        setMode('edit');
+        setIsEditing(false);
+        if (formFolderId) setExpanded(prev => ({ ...prev, [formFolderId]: true }));
+        notifyChanged();
+        await fetchAll();
+      } catch (err) { showToast(err.message, 'error'); }
+      setSaving(false);
+      return;
+    }
+
+    // A staged file (pdf/image/media/other) uploads now. When editing an
+    // existing document it REPLACES that document's file in place; otherwise it
+    // creates a new one.
+    if (pendingFile) {
+      setSaving(true);
+      try {
+        const rid = mode === 'edit' && selectedId ? selectedId : null;
+        const fd = new FormData();
+        fd.append('file', pendingFile);
+        fd.append('name', name.trim());
+        if (formFolderId) fd.append('folderId', formFolderId);
+        const endpoint = rid ? `/api/documents/${rid}/file` : '/api/documents/upload';
+        const res = await fetch(endpoint, { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || 'Upload failed');
+        showToast(rid ? 'File replaced!' : 'Document saved!');
+        // Point the view at the NEW file before any awaited render, so a
+        // just-replaced (deleted) file URL is never requested again.
+        if (pendingPreview && pendingPreview.url) URL.revokeObjectURL(pendingPreview.url);
+        setPendingFile(null);
+        setPendingPreview(null);
+        setSelectedId(data.item.id || data.item._id);
+        setName(data.item.name);
+        setContent(data.item.content || '');
+        setFileType(data.item.fileType || '');
+        setFileUrl(data.item.fileUrl || '');
+        setFormFolderId(data.item.folderId ? String(data.item.folderId) : '');
+        snapshotOriginal(data.item);
+        setMode('edit');
+        setIsEditing(false);
+        if (formFolderId) setExpanded(prev => ({ ...prev, [formFolderId]: true }));
+        notifyChanged();
+        await fetchAll();
+      } catch (err) { showToast(err.message, 'error'); }
+      setSaving(false);
+      return;
+    }
+
     const finalContent = editorRef.current ? editorRef.current.innerHTML : content;
     setSaving(true);
     try {
       const url = mode === 'create' ? '/api/documents' : `/api/documents/${selectedId}`;
       const method = mode === 'create' ? 'POST' : 'PUT';
+      // Editing turned a file-backed doc into editable content: drop the old file.
+      const clearFile = mode === 'edit' && !!fileUrl && !!finalContent;
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), content: finalContent, fileType, folderId: formFolderId || null }),
+        body: JSON.stringify({ name: name.trim(), content: finalContent, fileType, folderId: formFolderId || null, clearFile }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      if (clearFile) setFileUrl('');
       showToast(mode === 'create' ? 'Document created!' : 'Document updated!');
       await fetchAll();
       notifyChanged();
@@ -531,6 +818,7 @@ function DocumentsAdmin({ onChanged }) {
         setSelectedId(data.item.id || data.item._id);
         setMode('edit');
       }
+      snapshotOriginal(data.item);
       setIsEditing(false);
       setContent(finalContent);
     } catch (err) { showToast(err.message, 'error'); }
@@ -552,15 +840,47 @@ function DocumentsAdmin({ onChanged }) {
 
   const handleBack = () => { resetForm(); setMode('list'); };
   const startEditing = () => {
+    // A spreadsheet always edits through the grid: make sure it's wired up.
+    if (isSheetDoc && !sheetEdit) {
+      setSheetEdit({ url: fileUrl, ext: fileType, replaceId: selectedId });
+    }
     setIsEditing(true);
     setTimeout(() => { if (editorRef.current) editorRef.current.innerHTML = content; }, 0);
   };
   const cancelEditing = () => {
+    const o = original.current;
+    if (o) {
+      // Revert any unsaved edits (name, folder, content, chosen file).
+      setName(o.name);
+      setFormFolderId(o.folderId);
+      setContent(o.content);
+      setFileType(o.fileType);
+      setFileUrl(o.fileUrl);
+      if (pendingPreview && pendingPreview.url) URL.revokeObjectURL(pendingPreview.url);
+      setPendingFile(null);
+      setPendingPreview(null);
+      if (o.fileUrl && SHEET_EXTS.includes(String(o.fileType).toLowerCase())) {
+        setSheetEdit({ url: o.fileUrl, ext: o.fileType, replaceId: selectedId });
+      } else {
+        setSheetEdit(null);
+      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setTimeout(() => { if (editorRef.current) editorRef.current.innerHTML = o.content; }, 0);
+    }
     setIsEditing(false);
-    if (editorRef.current) editorRef.current.innerHTML = content;
   };
   const execCmd = (cmd, value = null) => { document.execCommand(cmd, false, value); editorRef.current?.focus(); };
   const handleInsertLink = () => { const url = prompt('Enter URL:'); if (url) execCmd('createLink', url); };
+
+  const setBatchName = (id, val) =>
+    setPendingBatch(prev => prev.map(it => (it.id === id ? { ...it, name: val } : it)));
+  const removeBatchItem = (id) =>
+    setPendingBatch(prev => {
+      const it = prev.find(x => x.id === id);
+      if (it && it.url) URL.revokeObjectURL(it.url);
+      const next = prev.filter(x => x.id !== id);
+      return next.length ? next : null;
+    });
 
   // ---------------- tree rendering ----------------
   //
@@ -580,15 +900,12 @@ function DocumentsAdmin({ onChanged }) {
           {...dropProps('doc', doc)}
         >
           <div className="doc-tree-label">
-            {GRIP}
-            <span className="doc-tree-icon">{FILE_ICON}</span>
+            {reorderMode && GRIP}
             <span className="doc-tree-name">{doc.name}</span>
-            {doc.fileType && doc.fileType !== 'manual' && (
-              <span className="doc-type-badge">{doc.fileType.toUpperCase()}</span>
-            )}
           </div>
           <div className="doc-tree-actions">
             <button className="btn-edit-sm" onClick={() => handleEdit(doc)}>Edit</button>
+            <button className="btn-tree-action" onClick={() => openMove('doc', doc)}>Move</button>
             <button className="btn-delete-inline" onClick={() => { setFolderDeleteConfirm(null); setDeleteInput(''); setDeleteConfirm(doc._id); }}>Delete</button>
           </div>
         </div>
@@ -620,7 +937,7 @@ function DocumentsAdmin({ onChanged }) {
               if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFolder(folder.id); }
             }}
           >
-            {GRIP}
+            {reorderMode && GRIP}
             {CHEVRON(open)}
             <span className="doc-tree-icon doc-tree-icon-folder">{FOLDER_ICON}</span>
             {renamingId === folder.id ? (
@@ -653,6 +970,7 @@ function DocumentsAdmin({ onChanged }) {
               <>
                 <button className="btn-tree-action" onClick={() => startNewFolder(folder.id)}>+ Subfolder</button>
                 <button className="btn-tree-action" onClick={() => handleNew(folder.id)}>+ Document</button>
+                <button className="btn-tree-action" onClick={() => openMove('folder', folder)}>Move</button>
                 <button className="btn-delete-inline" onClick={() => { setDeleteConfirm(null); setDeleteInput(''); setFolderDeleteConfirm(folder.id); }}>Delete</button>
               </>
             )}
@@ -789,7 +1107,19 @@ function DocumentsAdmin({ onChanged }) {
           <p className="cloud-info-empty">No folders yet. Use "+ New Folder" to build a structure, then add documents inside a folder with "+ Document".</p>
         ) : (
           <>
-            <div className="doc-tree">
+            <div className="reorder-toggle-section">
+              <button
+                className={`btn-reorder-toggle${reorderMode ? ' btn-reorder-toggle-active' : ''}`}
+                onClick={() => { setReorderMode(prev => !prev); setDrag(null); setHint(null); }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><polyline points="10 3 8 6 6 3"/><polyline points="14 21 16 18 18 21"/></svg>
+                {reorderMode ? 'Done Reordering' : 'Reorder Items'}
+              </button>
+              {reorderMode && (
+                <span className="drag-hint-inline reorder-mode-hint">Drag a row by its handle to reorder it within its own folder. Items never move into another folder.</span>
+              )}
+            </div>
+            <div className={`doc-tree${reorderMode ? ' doc-tree-reordering' : ''}`}>
               {newFolderIn === '' && renderNewFolderInput(0)}
               {rootFolders.map(folder => renderFolderNode(folder, 0))}
               {rootDocs.map(doc => renderDocRow(doc, 0))}
@@ -797,12 +1127,20 @@ function DocumentsAdmin({ onChanged }) {
           </>
         )}
         {renderDeleteModal()}
+        {renderMoveModal()}
       </div>
     );
   }
 
+  // A spreadsheet doc always uses the grid editor (never raw text / download).
+  const isSheetDoc = !!fileUrl && !content && SHEET_EXTS.includes(String(fileType).toLowerCase());
+  // A file-backed document (pdf/image/media/office) has no editable text body:
+  // we keep showing the file itself and only let the user rename, move or
+  // replace it — never a blank rich-text editor.
+  const isFileDoc = !!fileUrl && !content && !isSheetDoc;
+
   return (
-    <div className="cloud-info-admin cloud-info-admin-fixed" ref={formTopRef}>
+    <div className="cloud-info-admin doc-admin-flow" ref={formTopRef}>
       <div className="cloud-info-sticky-top">
         <div className="cloud-info-header">
           <button className="btn-back" onClick={handleBack}>&larr; Back</button>
@@ -811,21 +1149,26 @@ function DocumentsAdmin({ onChanged }) {
             {!loading && (
               isEditing ? (
                 <>
-                  <button className="btn-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
+                  <button className="btn-save" onClick={handleSave} disabled={saving}>
+                    {saving ? (batchProgress ? `Saving ${batchProgress.done}/${batchProgress.total}…` : 'Saving...')
+                      : pendingBatch ? `Save All (${pendingBatch.length})` : 'Save'}
+                  </button>
                   {mode === 'edit' && <button className="btn-cancel" onClick={cancelEditing}>Cancel</button>}
                 </>
               ) : (
-                <button className="btn-edit-sm" onClick={startEditing}>Edit Content</button>
+                <button className="btn-edit-sm" onClick={startEditing}>{(sheetEdit || isSheetDoc) ? 'Edit' : isFileDoc ? 'Edit Details' : 'Edit Content'}</button>
               )
             )}
           </div>
         </div>
         {!loading && (
           <>
-            <div className="form-group">
-              <label>Name</label>
-              <input type="text" value={name} onChange={e => setName(e.target.value)} disabled={!isEditing} placeholder="e.g. Migration Guide" />
-            </div>
+            {!pendingBatch && (
+              <div className="form-group">
+                <label>Name</label>
+                <input type="text" value={name} onChange={e => setName(e.target.value)} disabled={!isEditing} placeholder="e.g. Migration Guide" />
+              </div>
+            )}
             <div className="form-group">
               <label>Folder</label>
               <select value={formFolderId} onChange={e => setFormFolderId(e.target.value)} disabled={!isEditing}>
@@ -837,12 +1180,37 @@ function DocumentsAdmin({ onChanged }) {
             </div>
             {isEditing && (
               <div className="form-group">
-                <label>Upload File (.docx, .pdf, .xlsx)</label>
-                <input type="file" ref={fileInputRef} accept=".docx,.pdf,.xlsx,.xls" onChange={handleFileUpload} />
-                <small className="cloud-upload-meta">DOCX files are parsed inline. PDF/XLSX are stored as downloadable files.</small>
+                <label>Upload File{mode === 'create' ? 's' : ''} (any type)</label>
+                <div
+                  className={`doc-dropzone${dragOver ? ' doc-dropzone-over' : ''}`}
+                  onDragOver={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; if (!dragOver) setDragOver(true); }}
+                  onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOver(false);
+                    const files = Array.from(e.dataTransfer.files || []);
+                    if (files.length) processFiles(mode === 'create' ? files : files.slice(0, 1));
+                  }}
+                  onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputRef.current && fileInputRef.current.click(); } }}
+                >
+                  <svg className="doc-dropzone-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <div className="doc-dropzone-text">
+                    <strong>{dragOver ? 'Drop to add' : 'Drag & drop'}</strong> {mode === 'create' ? 'file(s) here' : 'a file here'}, or <span className="doc-dropzone-link">browse</span>
+                  </div>
+                </div>
+                <input type="file" ref={fileInputRef} multiple={mode === 'create'} onChange={handleFileUpload} hidden />
+                <small className="cloud-upload-meta">
+                  {mode === 'create'
+                    ? 'Pick one file to edit it inline, or add several at once (Save All).'
+                    : 'Choose a file to replace this document.'}
+                  {' '}DOCX/text open in the editor, spreadsheets in a grid, PDF/images/media preview inline.
+                </small>
               </div>
             )}
-            {isEditing && (
+            {isEditing && !pendingPreview && !isFileDoc && !pendingBatch && !sheetEdit && !isSheetDoc && (
               <div className="richtext-toolbar">
                 <button type="button" onClick={() => execCmd('bold')} title="Bold"><b>B</b></button>
                 <button type="button" onClick={() => execCmd('italic')} title="Italic"><i>I</i></button>
@@ -869,7 +1237,62 @@ function DocumentsAdmin({ onChanged }) {
       {loading && <p style={{ padding: '20px' }}>Loading...</p>}
       {!loading && (
         <div className="cloud-info-scroll-area">
-          {isEditing ? (
+          {pendingBatch ? (
+            <div className="doc-batch">
+              <div className="doc-staged-preview-hint">
+                {pendingBatch.length} file{pendingBatch.length !== 1 ? 's' : ''} into <strong>{folders.find(f => f.id === formFolderId)?.name || 'Documents (top level)'}</strong> — review names, then <strong>Save All</strong>.
+                {batchProgress && <span> &nbsp;Uploading {batchProgress.done}/{batchProgress.total}…</span>}
+              </div>
+              {pendingBatch.map((it) => (
+                <div className="doc-batch-item" key={it.id}>
+                  <div
+                    className={`doc-batch-thumb${it.url ? ' doc-batch-thumb-clickable' : ''}`}
+                    onClick={() => it.url && window.open(it.url, '_blank', 'noopener')}
+                    title={it.url ? 'Open in a new tab' : undefined}
+                  >
+                    {it.kind === 'image' ? <img src={it.url} alt={it.name} />
+                      : it.kind === 'pdf' ? <iframe className="doc-batch-pdf" src={it.url + '#toolbar=0&navpanes=0&scrollbar=0&view=Fit&page=1'} title={it.name} tabIndex={-1} />
+                        : it.kind === 'video' ? <video src={it.url} />
+                          : it.kind === 'audio' ? <span className="doc-batch-typebadge">♪ {it.ext.toUpperCase()}</span>
+                            : <span className="doc-batch-typebadge">{it.ext.toUpperCase()}</span>}
+                  </div>
+                  <div className="doc-batch-fields">
+                    <input
+                      className="doc-batch-name"
+                      value={it.name}
+                      onChange={(e) => setBatchName(it.id, e.target.value)}
+                      placeholder="Document name"
+                    />
+                    <span className="doc-batch-meta">{it.ext.toUpperCase()} · {(it.file.size / 1024).toFixed(0)} KB</span>
+                  </div>
+                  <button type="button" className="btn-delete-inline" onClick={() => removeBatchItem(it.id)}>Remove</button>
+                </div>
+              ))}
+            </div>
+          ) : (sheetEdit || isSheetDoc) ? (
+            <>
+              {isEditing && <div className="doc-staged-preview-hint">Edit the cells, then click <strong>Save</strong>.</div>}
+              <SpreadsheetEditor
+                ref={sheetRef}
+                file={sheetEdit ? sheetEdit.file : undefined}
+                url={sheetEdit ? sheetEdit.url : fileUrl}
+                ext={sheetEdit ? sheetEdit.ext : fileType}
+                readOnly={!isEditing}
+              />
+            </>
+          ) : pendingPreview ? (
+            <>
+              <div className="doc-staged-preview-hint">Not saved yet — click <strong>Save</strong> to upload.</div>
+              <FilePreview src={pendingPreview.url} ext={pendingPreview.ext} name={pendingPreview.name} />
+            </>
+          ) : isFileDoc ? (
+            <FilePreview
+              src={fileUrl + (fileUrl.includes('?') ? '&' : '?') + 'inline=1'}
+              ext={fileType}
+              name={name}
+              downloadUrl={fileUrl}
+            />
+          ) : isEditing ? (
             <div ref={editorRef} className="richtext-editor richtext-editor-no-top-radius" contentEditable suppressContentEditableWarning dangerouslySetInnerHTML={{ __html: content }} />
           ) : (
             <div className="cloud-info-preview" dangerouslySetInnerHTML={{ __html: content || '<em>No content yet</em>' }} />

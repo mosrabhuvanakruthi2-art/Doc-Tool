@@ -2545,6 +2545,37 @@ a:hover { text-decoration: underline; }
   margin-top: 10px;
 }
 
+.btn-reorder-toggle-active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn-reorder-toggle-active:hover {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  opacity: 0.92;
+}
+
+.reorder-mode-hint {
+  display: inline-block;
+  margin-top: 8px;
+}
+
+.reorder-item-dragging {
+  opacity: 0.6;
+}
+
+/* While reorder mode is on, tree rows show a grab cursor. */
+.doc-tree-reordering .doc-tree-row {
+  cursor: grab;
+}
+
+.doc-tree-reordering .doc-tree-row:active {
+  cursor: grabbing;
+}
+
 .move-btns {
   display: flex;
   gap: 2px;
@@ -5255,6 +5286,96 @@ a:hover { text-decoration: underline; }
 
 .doc-file-only { text-align: center; padding: 60px 20px; color: var(--text-muted); }
 .doc-file-only p { margin-bottom: 16px; font-size: 15px; }
+.doc-pdf-viewer { width: 100%; height: calc(100vh - 220px); min-height: 480px; }
+.doc-pdf-frame { width: 100%; height: 100%; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--bg-secondary); }
+
+/* Flowing PDF: pages stacked as images, scrolls with the page (no inner scroll) */
+.pdf-flow { width: 100%; }
+.pdf-flow-pages { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.pdf-flow-page { display: block; max-width: 1000px; width: 100%; border: 1px solid var(--border-color); border-radius: 4px; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08); background: #fff; }
+.pdf-flow-status { padding: 16px; text-align: center; color: var(--text-muted); font-size: 14px; }
+.pdf-flow-error a { color: var(--accent); text-decoration: underline; }
+.doc-media-viewer { width: 100%; padding: 12px 0; text-align: center; }
+.doc-media-image { max-width: 100%; height: auto; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--bg-secondary); }
+.doc-media-video { max-width: 100%; max-height: calc(100vh - 240px); border-radius: var(--radius); background: #000; }
+.doc-media-audio-wrap { padding: 40px 0; }
+.doc-media-audio { width: min(560px, 100%); }
+/* Documents create/edit form flows with the page (no fixed-height inner scroll
+   box), so the editor and file previews get a full, proper area rather than a
+   small box with its own scrollbar. */
+.doc-admin-flow { display: block; height: auto; }
+.doc-admin-flow .cloud-info-scroll-area { overflow: visible; min-height: 0; }
+.doc-admin-flow .richtext-editor-no-top-radius { height: auto; min-height: 68vh; }
+.doc-admin-flow .cloud-info-preview { min-height: 60vh; }
+
+.doc-staged-preview { display: flex; flex-direction: column; gap: 12px; padding: 12px 0 24px; box-sizing: border-box; }
+.doc-staged-preview-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--text-secondary); background: var(--accent-light); border: 1px solid var(--border-color); border-radius: var(--radius); padding: 10px 14px; }
+.doc-preview-name { font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-preview-download { flex-shrink: 0; text-decoration: none; }
+.doc-staged-preview-hint { font-size: 13px; color: var(--text-muted); padding: 10px 14px 0; }
+.doc-text-frame { background: #fff; }
+
+/* Spreadsheet grid editor */
+.sheet-editor { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 24px; }
+.sheet-toolbar { display: flex; gap: 8px; }
+.sheet-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); padding-bottom: 6px; }
+.sheet-tab { padding: 5px 12px; font-size: 12.5px; border: 1px solid var(--border-color); border-radius: var(--radius) var(--radius) 0 0; background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer; }
+.sheet-tab-active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sheet-scroll { max-height: 74vh; overflow: auto; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--bg-primary); }
+.sheet-table { border-collapse: collapse; font-size: 13px; width: max-content; min-width: 100%; }
+.sheet-table th { position: sticky; top: 0; z-index: 1; background: var(--bg-tertiary, var(--bg-secondary)); color: var(--text-muted); font-weight: 600; border: 1px solid var(--border-color); padding: 5px 8px; text-align: center; white-space: nowrap; }
+.sheet-table .sheet-rownum { position: sticky; left: 0; z-index: 1; min-width: 42px; }
+.sheet-table .sheet-corner { position: sticky; left: 0; z-index: 2; }
+.sheet-cell { border: 1px solid var(--border-color); padding: 4px 8px; min-width: 90px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: pre; vertical-align: top; color: var(--text-primary); }
+.sheet-cell[contenteditable="true"]:focus { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-light); white-space: pre-wrap; }
+.doc-sheet-reader { padding-top: 8px; }
+.doc-staged-preview .doc-pdf-frame { width: 100%; height: 88vh; min-height: 640px; flex: none; }
+.doc-staged-preview .doc-media-image { align-self: center; max-width: 100%; height: auto; object-fit: contain; }
+.doc-staged-preview .doc-media-video { align-self: center; width: 100%; max-height: 82vh; background: #000; border-radius: var(--radius); }
+.doc-staged-preview .doc-media-audio { align-self: center; width: min(560px, 100%); margin-top: 24px; }
+.doc-staged-preview-note { text-align: center; color: var(--text-muted); padding: 40px 20px; font-size: 15px; }
+
+/* Move document/folder modal */
+.doc-move-select {
+  width: 100%;
+  margin: 10px 0 4px;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-family: var(--font-family);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+}
+
+/* Upload drop-zone */
+.doc-dropzone {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  padding: 22px 16px; border: 2px dashed var(--border-color); border-radius: var(--radius);
+  background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer;
+  text-align: center; transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.doc-dropzone:hover { border-color: var(--accent); color: var(--text-primary); }
+.doc-dropzone-over { border-color: var(--accent); background: var(--accent-light); color: var(--text-primary); }
+.doc-dropzone-icon { flex-shrink: 0; color: var(--accent); }
+.doc-dropzone-text { font-size: 14px; }
+.doc-dropzone-link { color: var(--accent); text-decoration: underline; }
+
+/* Multi-file batch (Create) */
+.doc-batch { display: flex; flex-direction: column; gap: 10px; padding: 12px 0 24px; }
+.doc-batch-item { display: flex; align-items: center; gap: 14px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--bg-secondary); }
+.doc-batch-thumb { position: relative; flex-shrink: 0; width: 120px; height: 84px; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); }
+.doc-batch-thumb-clickable { cursor: pointer; }
+.doc-batch-thumb-clickable:hover { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-light); }
+.doc-batch-thumb img { max-width: 100%; max-height: 100%; object-fit: contain; }
+/* PDF thumbnail: static first page, no inner scroll/interaction — the whole
+   thumb is clickable to open the file in a new tab. */
+.doc-batch-pdf { width: 100%; height: 100%; border: 0; pointer-events: none; }
+.doc-batch-thumb video { max-width: 100%; max-height: 100%; background: #000; pointer-events: none; }
+.doc-batch-typebadge { font-size: 15px; font-weight: 700; color: var(--text-muted); letter-spacing: 0.5px; }
+.doc-batch-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.doc-batch-name { width: 100%; padding: 8px 10px; font-size: 14px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); }
+.doc-batch-meta { font-size: 12px; color: var(--text-muted); }
 
 
 /* ============ AUDIT LOGS ============ */
@@ -5604,6 +5725,42 @@ a:hover { text-decoration: underline; }
 }
 
 .btn-tree-action:hover {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* New-folder inline confirm buttons (Create / Cancel) */
+.btn-confirm-yes,
+.btn-confirm-cancel {
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-family);
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  border: 1px solid transparent;
+}
+
+.btn-confirm-yes {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.btn-confirm-yes:hover {
+  filter: brightness(0.93);
+}
+
+.btn-confirm-cancel {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border-color);
+}
+
+.btn-confirm-cancel:hover {
   background: var(--bg-primary);
   color: var(--text-primary);
   border-color: var(--text-muted);

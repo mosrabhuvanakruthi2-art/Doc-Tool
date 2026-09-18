@@ -2,7 +2,11 @@ import { useState, useEffect } from 'react';
 import CfLoader from './CfLoader';
 import DocumentAccessRequest from './DocumentAccessRequest';
 import UpdatedOn from './UpdatedOn';
+import FilePreview from './FilePreview';
+import SpreadsheetEditor from './SpreadsheetEditor';
 import { reportDownload } from '../reportDownload';
+
+const SHEET_EXTS = ['xlsx', 'xls', 'xlsm', 'csv', 'tsv'];
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
 
@@ -207,7 +211,15 @@ function DocumentPage({ slug }) {
   if (error) return <div className="cloud-info-page"><p className="error-msg">{error}</p></div>;
   if (!item) return <div className="cloud-info-page"><p>Select a document from the sidebar.</p></div>;
 
-  const isFileOnly = (item.fileType === 'pdf' || item.fileType === 'xlsx') && !item.content;
+  // How to present the file. Editable HTML content (DOCX / text / rich text)
+  // always wins; otherwise the shared FilePreview shows it inline by kind and
+  // falls back to a download card for anything the browser can't render.
+  const ftype = String(item.fileType || '').toLowerCase();
+  const inlineUrl = item.fileUrl
+    ? item.fileUrl + (item.fileUrl.includes('?') ? '&' : '?') + 'inline=1'
+    : '';
+  const hasContent = !!(item.content && item.content.trim());
+  const showFile = !hasContent && !!item.fileUrl;
 
   const handleExport = async () => {
     if (exporting) return;
@@ -248,11 +260,12 @@ function DocumentPage({ slug }) {
           )}
         </div>
       </div>
-      {isFileOnly ? (
-        <div className="doc-file-only">
-          <p>This is a <strong>{item.fileType.toUpperCase()}</strong> file.</p>
-          <a href={item.fileUrl} download className="btn-save">Download {item.fileType.toUpperCase()}</a>
+      {showFile && SHEET_EXTS.includes(ftype) ? (
+        <div className="doc-sheet-reader">
+          <SpreadsheetEditor url={item.fileUrl} ext={ftype} readOnly />
         </div>
+      ) : showFile ? (
+        <FilePreview src={inlineUrl} ext={ftype} name={item.name} downloadUrl={item.fileUrl} hideBar />
       ) : (
         <div className="cloud-info-page-content" dangerouslySetInnerHTML={{ __html: item.content || '<em>No content available.</em>' }} />
       )}

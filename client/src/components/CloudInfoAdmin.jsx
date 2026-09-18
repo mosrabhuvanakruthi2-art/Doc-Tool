@@ -32,6 +32,7 @@ function CloudInfoAdmin({ onChanged }) {
   const infoDragItem = useRef(null);
   const infoDragOver = useRef(null);
   const [dragIdx, setDragIdx] = useState(null);
+  const [showReorder, setShowReorder] = useState(false);
 
   useEffect(() => { fetchItems(); }, []);
 
@@ -268,22 +269,42 @@ function CloudInfoAdmin({ onChanged }) {
           <p className="cloud-info-empty">No Cloud Info entries yet. Click "New Cloud Info" to create one.</p>
         ) : (
           <>
-            {items.length > 1 && <p className="cloud-info-drag-hint">Drag a row by its handle to reorder.</p>}
-            <div className="cloud-info-list">
-              {items.map((item, idx) => (
-                <div
-                  key={item._id}
-                  className={`cloud-info-list-item${dragIdx === idx ? ' cloud-info-dragging' : ''}`}
-                  draggable={items.length > 1}
-                  onDragStart={() => { infoDragItem.current = idx; setDragIdx(idx); }}
-                  onDragEnter={() => { infoDragOver.current = idx; }}
-                  onDragOver={e => e.preventDefault()}
-                  onDragEnd={handleInfoDragEnd}
-                >
-                  <div className="cloud-info-list-name">
-                    {items.length > 1 && <span className="cloud-info-grip" title="Drag to reorder">⠿</span>}
-                    {item.name}
+            {items.length > 1 && (
+              <div className="reorder-toggle-section">
+                <button className="btn-reorder-toggle" onClick={() => setShowReorder(prev => !prev)}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><polyline points="10 3 8 6 6 3"/><polyline points="14 21 16 18 18 21"/></svg>
+                  {showReorder ? 'Hide Reorder' : 'Reorder Items'}
+                </button>
+                {showReorder && (
+                  <div className="reorder-list">
+                    <label className="reorder-label">Cloud Info Order <span className="drag-hint-inline">(drag to reorder)</span></label>
+                    {items.map((item, idx) => (
+                      <div
+                        key={item._id}
+                        className={`reorder-item${dragIdx === idx ? ' reorder-item-dragging' : ''}`}
+                        draggable
+                        onDragStart={(e) => {
+                          infoDragItem.current = idx;
+                          setDragIdx(idx);
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', String(idx));
+                        }}
+                        onDragEnter={() => { infoDragOver.current = idx; }}
+                        onDragOver={e => e.preventDefault()}
+                        onDragEnd={handleInfoDragEnd}
+                      >
+                        <span className="drag-dots reorder-drag-handle">⠿</span>
+                        <span className="reorder-item-name">{idx + 1}. {item.name}</span>
+                      </div>
+                    ))}
                   </div>
+                )}
+              </div>
+            )}
+            <div className="cloud-info-list">
+              {items.map((item) => (
+                <div key={item._id} className="cloud-info-list-item">
+                  <div className="cloud-info-list-name">{item.name}</div>
                   <div className="cloud-info-list-actions">
                     <button className="btn-edit-sm" onClick={() => handleEdit(item)}>Edit</button>
                     <button className="btn-delete-inline" onClick={() => { setDeleteInput(''); setDeleteConfirm(item._id); }}>Delete</button>

@@ -54,10 +54,13 @@ function DocumentsAdmin({ onChanged }) {
   const [pendingBatch, setPendingBatch] = useState(null);
   const [batchProgress, setBatchProgress] = useState(null); // { done, total }
   const [dragOver, setDragOver] = useState(false);          // upload drop-zone highlight
-  // Move a document or folder into another folder: { kind, id, name, parentId }.
-  const [moveTarget, setMoveTarget] = useState(null);
+  // File-explorer-style move: tick folders/documents, then move them together.
+  const [moveMode, setMoveMode] = useState(false);
+  const [moveSel, setMoveSel] = useState([]); // [{ kind, id, name, parentId }]
   const [moveDest, setMoveDest] = useState('');
   const [moving, setMoving] = useState(false);
+  const [moveDrag, setMoveDrag] = useState(null); // { kind, id, name, parentId } being dragged
+  const [moveOver, setMoveOver] = useState('');   // folder id currently hovered as drop target
   // The last saved/loaded state, so Cancel can revert unsaved name/folder edits.
   const original = useRef(null);
   const [loading, setLoading] = useState(false);
@@ -141,65 +144,115 @@ function DocumentsAdmin({ onChanged }) {
     return out;
   };
 
-  // ---------------- move a document / folder ----------------
-  const openMove = (kind, row) => {
+  // ---------------- file-explorer style move ----------------
+  const toggleMoveMode = () => {
+    setMoveMode(prev => !prev);
+    setMoveSel([]);
+    setMoveDest('');
+    setReorderMode(false);
+  };
+
+  const isSelected = (kind, id) => moveSel.some(s => s.kind === kind && s.id === id);
+
+  const toggleSelect = (kind, row) => {
     const id = kind === 'folder' ? row.id : row._id;
-    const parentId = kind === 'folder'
-      ? (row.parentId || '')
-      : (row.folderId ? String(row.folderId) : '');
-    setMoveTarget({ kind, id, name: row.name, parentId });
-    setMoveDest(parentId);
+    const parentId = kind === 'folder' ? (row.parentId || '') : (row.folderId ? String(row.folderId) : '');
+    setMoveSel(prev => prev.some(s => s.kind === kind && s.id === id)
+      ? prev.filter(s => !(s.kind === kind && s.id === id))
+      : [...prev, { kind, id, name: row.name, parentId }]);
   };
 
-  const handleMove = async () => {
-    if (!moveTarget) return;
+  // Destinations a folder in the selection can't go into: itself and its subtree.
+  const moveExcluded = useMemo(() => {
+    const set = new Set();
+    moveSel.filter(s => s.kind === 'folder').forEach(s => {
+      set.add(s.id);
+      descendantsOf(s.id).forEach(d => set.add(d));
+    });
+    return set;
+  }, [moveSel, folders]);
+
+  // Move a list of items into a destination folder ('' = top level). Shared by
+  // the "Move to" bar and by drag-and-drop onto a folder.
+  const performMove = async (items, destId) => {
+    if (!items.length || moving) return;
     setMoving(true);
-    try {
-      const { kind, id } = moveTarget;
-      const url = kind === 'folder' ? `/api/document-folders/${id}` : `/api/documents/${id}`;
-      const body = kind === 'folder' ? { parentId: moveDest || null } : { folderId: moveDest || null };
-      const res = await fetch(url, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || 'Move failed');
-      showToast(`Moved "${moveTarget.name}"`);
-      if (moveDest) setExpanded(prev => ({ ...prev, [moveDest]: true }));
-      setMoveTarget(null);
-      await fetchAll();
-      notifyChanged();
-    } catch (err) { showToast(err.message, 'error'); }
+    let done = 0, skipped = 0; const failed = [];
+    for (const s of items) {
+      // Already there, or a folder dropped into itself / its own subtree.
+      if ((s.parentId || '') === (destId || '')) { skipped++; continue; }
+      if (s.kind === 'folder' && (destId === s.id || descendantsOf(s.id).includes(destId))) { failed.push(s.name); continue; }
+      try {
+        const url = s.kind === 'folder' ? `/api/document-folders/${s.id}` : `/api/documents/${s.id}`;
+        const body = s.kind === 'folder' ? { parentId: destId || null } : { folderId: destId || null };
+        const res = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || 'Move failed');
+        done++;
+      } catch (_) { failed.push(s.name); }
+    }
+    if (destId) setExpanded(prev => ({ ...prev, [destId]: true }));
+    await fetchAll();
+    notifyChanged();
+    if (done || failed.length) {
+      showToast(`Moved ${done} item${done !== 1 ? 's' : ''}` + (failed.length ? `, ${failed.length} failed` : '') + '.', failed.length ? 'error' : 'success');
+    }
     setMoving(false);
+    return { done, failed, skipped };
   };
 
-  const renderMoveModal = () => {
-    if (!moveTarget) return null;
-    // A folder can't move into itself or its own descendants.
-    const invalid = moveTarget.kind === 'folder'
-      ? new Set([moveTarget.id, ...descendantsOf(moveTarget.id)])
-      : new Set();
-    const options = folderOptions.filter(o => !invalid.has(o.id));
-    return (
-      <div className="permanent-delete-modal" onClick={() => !moving && setMoveTarget(null)}>
-        <div className="permanent-delete-card" onClick={e => e.stopPropagation()}>
-          <h4>Move {moveTarget.kind === 'folder' ? 'Folder' : 'Document'}</h4>
-          <p>Move <strong>&quot;{moveTarget.name}&quot;</strong> to:</p>
-          <select className="doc-move-select" value={moveDest} onChange={e => setMoveDest(e.target.value)} autoFocus>
-            <option value="">Top level</option>
-            {options.map(o => (
-              <option key={o.id} value={o.id}>{'  '.repeat(o.depth) + (o.depth ? '└ ' : '') + o.name}</option>
-            ))}
-          </select>
-          <div className="permanent-delete-actions">
-            <button className="btn-save" disabled={moving || moveDest === moveTarget.parentId} onClick={handleMove}>
-              {moving ? 'Moving…' : 'Move'}
-            </button>
-            <button className="btn-cancel" onClick={() => setMoveTarget(null)} disabled={moving}>Cancel</button>
-          </div>
-        </div>
-      </div>
-    );
+  const handleBulkMove = async () => {
+    await performMove(moveSel, moveDest);
+    setMoveMode(false);
+    setMoveSel([]);
+    setMoveDest('');
   };
+
+  // ---- drag a row onto a folder to move it (file-explorer style) ----
+  const moveDragProps = (kind, row) => ({
+    draggable: true,
+    onDragStart: (e) => {
+      e.stopPropagation();
+      const id = kind === 'folder' ? row.id : row._id;
+      const parentId = kind === 'folder' ? (row.parentId || '') : (row.folderId ? String(row.folderId) : '');
+      setMoveDrag({ kind, id, name: row.name, parentId });
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', String(id)); } catch (_) {}
+    },
+    onDragEnd: () => { setMoveDrag(null); setMoveOver(''); },
+  });
+
+  // A folder is a valid drop target unless we'd drop a folder into itself/subtree.
+  const moveDropAllowed = (folder) => {
+    if (!moveDrag) return false;
+    if (moveDrag.kind === 'folder') {
+      if (moveDrag.id === folder.id) return false;
+      if (descendantsOf(moveDrag.id).includes(folder.id)) return false;
+    }
+    return true;
+  };
+
+  const moveDropProps = (folder) => ({
+    onDragOver: (e) => {
+      if (!moveDrag || !moveDropAllowed(folder)) return;
+      e.preventDefault(); e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      if (moveOver !== folder.id) setMoveOver(folder.id);
+    },
+    onDragLeave: () => setMoveOver(prev => (prev === folder.id ? '' : prev)),
+    onDrop: async (e) => {
+      if (!moveDrag || !moveDropAllowed(folder)) return;
+      e.preventDefault(); e.stopPropagation();
+      // If the dragged row is part of the ticked selection, move the whole
+      // selection; otherwise just the dragged row.
+      const dragged = moveDrag;
+      const inSel = moveSel.some(s => s.kind === dragged.kind && s.id === dragged.id);
+      const items = inSel ? moveSel : [dragged];
+      setMoveOver(''); setMoveDrag(null);
+      await performMove(items, folder.id);
+      setMoveSel([]);
+    },
+  });
 
   const toggleFolder = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
 
@@ -894,18 +947,22 @@ function DocumentsAdmin({ onChanged }) {
     return (
       <div key={doc._id} className="doc-tree-item">
         <div
-          className={`doc-tree-row doc-tree-file${dim}${hintClass('doc', doc)}`}
+          className={`doc-tree-row doc-tree-file${dim}${hintClass('doc', doc)}${moveMode && moveDrag && moveDrag.kind === 'doc' && moveDrag.id === doc._id ? ' doc-move-dragging' : ''}`}
           style={{ paddingLeft: 12 + depth * 20 }}
           {...dragProps('doc', doc, parentId)}
           {...dropProps('doc', doc)}
+          {...(moveMode ? moveDragProps('doc', doc) : {})}
         >
           <div className="doc-tree-label">
+            {moveMode && (
+              <input type="checkbox" className="doc-move-check" checked={isSelected('doc', doc._id)}
+                onClick={(e) => e.stopPropagation()} onChange={() => toggleSelect('doc', doc)} />
+            )}
             {reorderMode && GRIP}
             <span className="doc-tree-name">{doc.name}</span>
           </div>
           <div className="doc-tree-actions">
             <button className="btn-edit-sm" onClick={() => handleEdit(doc)}>Edit</button>
-            <button className="btn-tree-action" onClick={() => openMove('doc', doc)}>Move</button>
             <button className="btn-delete-inline" onClick={() => { setFolderDeleteConfirm(null); setDeleteInput(''); setDeleteConfirm(doc._id); }}>Delete</button>
           </div>
         </div>
@@ -923,10 +980,11 @@ function DocumentsAdmin({ onChanged }) {
     return (
       <div key={folder.id} className="doc-tree-node">
         <div
-          className={`doc-tree-row doc-tree-folder${dim}${hintClass('folder', folder)}`}
+          className={`doc-tree-row doc-tree-folder${dim}${hintClass('folder', folder)}${moveMode && moveOver === folder.id ? ' doc-move-over' : ''}${moveMode && moveDrag && moveDrag.kind === 'folder' && moveDrag.id === folder.id ? ' doc-move-dragging' : ''}`}
           style={{ paddingLeft: 12 + depth * 20 }}
           {...dragProps('folder', folder, folder.parentId || '')}
           {...dropProps('folder', folder)}
+          {...(moveMode ? { ...moveDragProps('folder', folder), ...moveDropProps(folder) } : {})}
         >
           <div
             className="doc-tree-label doc-tree-toggle"
@@ -937,6 +995,10 @@ function DocumentsAdmin({ onChanged }) {
               if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFolder(folder.id); }
             }}
           >
+            {moveMode && (
+              <input type="checkbox" className="doc-move-check" checked={isSelected('folder', folder.id)}
+                onClick={(e) => e.stopPropagation()} onChange={() => toggleSelect('folder', folder)} />
+            )}
             {reorderMode && GRIP}
             {CHEVRON(open)}
             <span className="doc-tree-icon doc-tree-icon-folder">{FOLDER_ICON}</span>
@@ -970,7 +1032,6 @@ function DocumentsAdmin({ onChanged }) {
               <>
                 <button className="btn-tree-action" onClick={() => startNewFolder(folder.id)}>+ Subfolder</button>
                 <button className="btn-tree-action" onClick={() => handleNew(folder.id)}>+ Document</button>
-                <button className="btn-tree-action" onClick={() => openMove('folder', folder)}>Move</button>
                 <button className="btn-delete-inline" onClick={() => { setDeleteConfirm(null); setDeleteInput(''); setFolderDeleteConfirm(folder.id); }}>Delete</button>
               </>
             )}
@@ -1107,19 +1168,46 @@ function DocumentsAdmin({ onChanged }) {
           <p className="cloud-info-empty">No folders yet. Use "+ New Folder" to build a structure, then add documents inside a folder with "+ Document".</p>
         ) : (
           <>
-            <div className="reorder-toggle-section">
+            <div className="reorder-toggle-section doc-toolbar-row">
               <button
                 className={`btn-reorder-toggle${reorderMode ? ' btn-reorder-toggle-active' : ''}`}
-                onClick={() => { setReorderMode(prev => !prev); setDrag(null); setHint(null); }}
+                onClick={() => { setReorderMode(prev => !prev); setDrag(null); setHint(null); setMoveMode(false); setMoveSel([]); }}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><polyline points="10 3 8 6 6 3"/><polyline points="14 21 16 18 18 21"/></svg>
                 {reorderMode ? 'Done Reordering' : 'Reorder Items'}
               </button>
+              <button
+                className={`btn-reorder-toggle${moveMode ? ' btn-reorder-toggle-active' : ''}`}
+                onClick={toggleMoveMode}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+                {moveMode ? 'Cancel Move' : 'Move Items'}
+              </button>
               {reorderMode && (
-                <span className="drag-hint-inline reorder-mode-hint">Drag a row by its handle to reorder it within its own folder. Items never move into another folder.</span>
+                <span className="drag-hint-inline reorder-mode-hint">Drag a row by its handle to reorder it within its own folder.</span>
               )}
             </div>
-            <div className={`doc-tree${reorderMode ? ' doc-tree-reordering' : ''}`}>
+
+            {moveMode && (
+              <div className="doc-move-bar">
+                <span className="doc-move-count">{moveSel.length} selected</span>
+                <span className="doc-move-to">Move to</span>
+                <select className="doc-move-select" value={moveDest} onChange={e => setMoveDest(e.target.value)}>
+                  <option value="">Top level</option>
+                  {folderOptions.filter(o => !moveExcluded.has(o.id)).map(o => (
+                    <option key={o.id} value={o.id}>{'  '.repeat(o.depth) + (o.depth ? '└ ' : '') + o.name}</option>
+                  ))}
+                </select>
+                <button className="btn-save" disabled={!moveSel.length || moving} onClick={handleBulkMove}>
+                  {moving ? 'Moving…' : `Move${moveSel.length ? ' ' + moveSel.length : ''}`}
+                </button>
+                {moveSel.length > 0 && (
+                  <button className="btn-cancel" disabled={moving} onClick={() => setMoveSel([])}>Clear</button>
+                )}
+                <span className="drag-hint-inline">Tick items and use “Move to”, or just drag a row onto a folder.</span>
+              </div>
+            )}
+            <div className={`doc-tree${reorderMode ? ' doc-tree-reordering' : ''}${moveMode ? ' doc-move-mode' : ''}`}>
               {newFolderIn === '' && renderNewFolderInput(0)}
               {rootFolders.map(folder => renderFolderNode(folder, 0))}
               {rootDocs.map(doc => renderDocRow(doc, 0))}
@@ -1127,7 +1215,6 @@ function DocumentsAdmin({ onChanged }) {
           </>
         )}
         {renderDeleteModal()}
-        {renderMoveModal()}
       </div>
     );
   }

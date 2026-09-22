@@ -5335,18 +5335,25 @@ a:hover { text-decoration: underline; }
 .doc-staged-preview .doc-media-audio { align-self: center; width: min(560px, 100%); margin-top: 24px; }
 .doc-staged-preview-note { text-align: center; color: var(--text-muted); padding: 40px 20px; font-size: 15px; }
 
-/* Move document/folder modal */
-.doc-move-select {
-  width: 100%;
-  margin: 10px 0 4px;
-  padding: 9px 12px;
-  font-size: 14px;
-  font-family: var(--font-family);
-  color: var(--text-primary);
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
+/* Move mode (file-explorer style) */
+.doc-toolbar-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.doc-move-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding: 10px 14px;
+  background: var(--accent-light); border: 1px solid var(--border-color); border-radius: var(--radius);
 }
+.doc-move-count { font-weight: 700; color: var(--text-primary); font-size: 13px; }
+.doc-move-to { font-size: 13px; color: var(--text-secondary); }
+.doc-move-select {
+  min-width: 220px; padding: 8px 12px; font-size: 14px; font-family: var(--font-family);
+  color: var(--text-primary); background: var(--bg-primary);
+  border: 1px solid var(--border-color); border-radius: var(--radius);
+}
+.doc-move-check { width: 16px; height: 16px; margin-right: 4px; cursor: pointer; accent-color: var(--accent); flex-shrink: 0; }
+/* Drag-to-move within Move mode */
+.doc-move-mode .doc-tree-row { cursor: grab; }
+.doc-move-over { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--accent-light); }
+.doc-move-dragging { opacity: 0.5; }
 
 /* Upload drop-zone */
 .doc-dropzone {

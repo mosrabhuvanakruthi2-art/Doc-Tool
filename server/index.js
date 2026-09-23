@@ -134,6 +134,27 @@ app.use('/api/', (req, res, next) => {
   return globalLimiter(req, res, next);
 });
 
+// Content lock: EVERY /api route requires a valid signed-in session, except the
+// login handshake and the health probe. This is the single outer gate that keeps
+// all tool data (documents, folders, cloud info, features, compatibility,
+// product config, audit, etc.) invisible to anyone who is not authenticated —
+// so a direct API call that bypasses the UI still gets nothing. Per-route
+// requireAuth/requireAdmin checks remain as defense-in-depth.
+const PUBLIC_API = [
+  /^\/api\/health$/,          // liveness probe
+  /^\/api\/auth\//,           // login, verify, microsoft exchange, logout
+  /^\/api\/admin\/login$/,    // admin password login
+  /^\/api\/client-errors$/,   // browser error reports may fire before login
+];
+app.use('/api', (req, res, next) => {
+  const path = req.originalUrl.split('?')[0];
+  if (PUBLIC_API.some((rx) => rx.test(path))) return next();
+  const decoded = decodeToken(req);
+  if (!decoded) return res.status(401).json({ error: 'Authentication required' });
+  req.user = decoded;
+  next();
+});
+
 // --------------- Auth ---------------
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;

@@ -8,8 +8,9 @@ import DocumentsAdmin from './DocumentsAdmin';
 import UserAdmin from './UserAdmin';
 import TrashAdmin from './TrashAdmin';
 import AuditLog from './AuditLog';
+import ErrorLogsAdmin from './ErrorLogsAdmin';
 
-const VALID_TABS = ['add', 'edit', 'compatibility', 'cloudinfo', 'documents', 'users', 'audit', 'trash'];
+const VALID_TABS = ['add', 'edit', 'compatibility', 'cloudinfo', 'documents', 'users', 'audit', 'errors', 'trash'];
 
 function AdminPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -51,6 +52,9 @@ function AdminPage() {
           <button className={`admin-tab ${activeTab === 'audit' ? 'active' : ''}`} onClick={() => handleTabChange('audit')}>
             Audit Logs
           </button>
+          <button className={`admin-tab ${activeTab === 'errors' ? 'active' : ''}`} onClick={() => handleTabChange('errors')}>
+            Errors
+          </button>
           <button className={`admin-tab admin-tab-trash ${activeTab === 'trash' ? 'active' : ''}`} onClick={() => handleTabChange('trash')}>
             Trash
           </button>
@@ -63,6 +67,7 @@ function AdminPage() {
         {activeTab === 'documents' && <DocumentsAdmin onChanged={handleSaved} />}
         {activeTab === 'users' && <UserAdmin />}
         {activeTab === 'audit' && <AuditLog />}
+        {activeTab === 'errors' && <ErrorLogsAdmin />}
         {activeTab === 'trash' && <TrashAdmin onChanged={handleSaved} />}
       </div>
     </div>

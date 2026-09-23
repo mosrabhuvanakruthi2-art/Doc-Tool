@@ -116,11 +116,44 @@ app.use(express.urlencoded({ extended: true, limit: API_BODY_LIMIT }));
 // Correct client IP behind nginx/other proxy, so limits key on the real client.
 app.set('trust proxy', 1);
 
+// Failure interceptor: give every API request a reference id, tag error
+// responses with { code, category } so the client can classify them, and record
+// every 4xx/5xx once (with the stack for 5xx) in the ErrorLog. This catches all
+// failures — inline `res.status(4xx)`, thrown 5xx, everything — in one place.
+app.use('/api', (req, res, next) => {
+  req.refId = req.refId || newRefId();
+  res.setHeader('X-Ref-Id', req.refId);
+  const origJson = res.json.bind(res);
+  res.json = (body) => {
+    if (res.statusCode >= 400 && body && typeof body === 'object' && !Array.isArray(body)) {
+      if (body.code === undefined) body.code = req.refId;
+      if (body.category === undefined) body.category = classifyStatus(res.statusCode);
+    }
+    res._body = body;
+    return origJson(body);
+  };
+  res.on('finish', () => {
+    if (res.statusCode < 400) return;
+    logError({
+      source: 'backend',
+      status: res.statusCode,
+      category: classifyStatus(res.statusCode),
+      method: req.method,
+      route: req.originalUrl,
+      message: res._errMessage || (res._body && res._body.error) || '',
+      reason: (res._body && res._body.error) || '',
+      stack: res._errStack || '',
+      req,
+    });
+  });
+  next();
+});
+
 // Liveness/readiness probe for the container orchestrator. Registered before
 // the rate limiter so health checks never consume a request budget.
 app.get('/api/health', (req, res) => {
   const states = ['disconnected', 'connected', 'connecting', 'disconnecting'];
-  res.json({ ok: true, mongo: states[mongoose.connection.readyState] || 'unknown' });
+  res.json({ ok: true, mongo: states[mongoose.connection.readyState] || 'unknown', time: new Date().toISOString() });
 });
 
 // Tiered rate limiting: a global ceiling on every API request, with tighter
@@ -165,11 +198,78 @@ const FULL_PERMISSIONS = { productTypes: true, compatibility: true, cloudInfo: t
 
 // Unexpected errors are logged in full server-side and returned to the client as
 // a generic message, so internal details (stack, driver errors) never leak.
+// ---------------- Error tracking / classification ----------------
+const ErrorLog = require('./models/ErrorLog');
+
+// Short, human-quotable reference for a single failure.
+function newRefId() { return crypto.randomBytes(4).toString('hex').toUpperCase(); }
+
+// Map an HTTP status to a failure category. 4xx are human/expected; 5xx are ours.
+function classifyStatus(s) {
+  if (s === 400) return 'validation';
+  if (s === 401) return 'auth';
+  if (s === 403) return 'permission';
+  if (s === 404) return 'notfound';
+  if (s === 409) return 'conflict';
+  if (s === 413 || s === 415) return 'payload';
+  if (s === 429) return 'ratelimit';
+  if (s >= 500) return 'server';
+  if (s >= 400) return 'client';
+  return 'ok';
+}
+
+// Categories that mean "a person did something we told them not to" — expected,
+// not a bug. Everything else is code/server/dependency and worth a real alert.
+const HUMAN_CATEGORIES = new Set(['validation', 'auth', 'permission', 'conflict', 'payload', 'ratelimit', 'notfound', 'client']);
+
+// Never throws — a logging failure must not break the request it is logging.
+async function logError(entry = {}) {
+  try {
+    const req = entry.req || {};
+    await ErrorLog.create({
+      at: new Date(),
+      refId: entry.refId || req.refId || newRefId(),
+      source: entry.source || 'backend',
+      category: entry.category || 'unknown',
+      status: entry.status || 0,
+      method: entry.method || req.method || '',
+      route: entry.route || req.originalUrl || '',
+      message: String(entry.message || '').slice(0, 2000),
+      reason: String(entry.reason || '').slice(0, 2000),
+      stack: String(entry.stack || '').slice(0, 8000),
+      actorEmail: entry.actorEmail || (req.user && req.user.email) || '',
+      userAgent: (req.headers && req.headers['user-agent']) || entry.userAgent || '',
+      ip: (req.headers && (req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.ip || '',
+      context: entry.context,
+    });
+  } catch (e) {
+    console.error('[logError failed]', e.message);
+  }
+}
+
+// Post-condition check: after an operation claims success, confirm the real
+// outcome. `checks` is [{ ok, reason }]; the first failing one is logged as a
+// silent failure (success reported but the result is wrong/missing).
+async function verifyOrLog(checks, req, context) {
+  const failed = checks.find(c => !c.ok);
+  if (!failed) return true;
+  await logError({
+    source: 'backend', category: 'silent-failure', status: 0,
+    reason: failed.reason, message: 'Post-condition failed: ' + failed.reason,
+    req, context,
+  });
+  return false;
+}
+
 function sendServerError(res, err) {
+  const req = res.req || {};
   // A deliberate client-facing error (bad input, 4xx) keeps its message and status.
   if (err && err.expose && err.status && err.status < 500) {
     return res.status(err.status).json({ error: err.message });
   }
+  // Stash the stack so the response-finish logger records it once, with detail.
+  res._errStack = (err && err.stack) || String(err);
+  res._errMessage = (err && err.message) || String(err);
   console.error('[server error]', (err && err.stack) || err);
   res.status(500).json({ error: 'Something went wrong. Please try again.' });
 }
@@ -3371,6 +3471,18 @@ app.post('/api/documents/upload', uploadLimiter, requireAdmin, docUpload.single(
 
     const count = await DocModel.countDocuments({ folderId: uploadFolderId, isDeleted: { $ne: true } });
     const item = await DocModel.create({ name, slug, content: sanitizeHtml(content), fileUrl, fileType, folderId: uploadFolderId, order: count });
+
+    // Post-condition: "upload succeeded" must mean the file is really on disk,
+    // non-empty, and the record is retrievable. If not, it's a silent failure.
+    let onDisk = false, sizeOk = false, fetchable = false;
+    try { const st = fs.statSync(req.file.path); onDisk = true; sizeOk = st.size > 0; } catch (_) {}
+    try { fetchable = !!(await DocModel.findById(item._id).select('_id').lean()); } catch (_) {}
+    await verifyOrLog([
+      { ok: onDisk, reason: 'Upload reported success but the file is missing on disk' },
+      { ok: sizeOk, reason: 'Upload reported success but the stored file is empty (0 bytes)' },
+      { ok: fetchable, reason: 'Upload reported success but the document record could not be read back' },
+    ], req, { name, fileType, fileUrl, originalname: req.file && req.file.originalname, size: req.file && req.file.size });
+
     await audit(req, {
       action: 'upload.document_file', category: 'content',
       targetType: 'document', targetName: (req.file && req.file.originalname) || '',
@@ -3402,7 +3514,18 @@ app.post('/api/documents/:id/file', uploadLimiter, requireAdmin, docUpload.singl
     doc.fileUrl = newUrl;
     doc.fileType = ext || doc.fileType;
     doc.content = '';
+    const oldName = path.basename(newUrl); // new file's on-disk name
     await doc.save();
+
+    // Post-condition: the new file is on disk and the doc points at it.
+    let newOnDisk = false, pointed = false;
+    try { newOnDisk = fs.statSync(path.join(docsDir, oldName)).size >= 0; } catch (_) {}
+    try { const fresh = await DocModel.findById(doc._id).select('fileUrl').lean(); pointed = fresh && fresh.fileUrl === newUrl; } catch (_) {}
+    await verifyOrLog([
+      { ok: newOnDisk, reason: 'File replace reported success but the new file is missing on disk' },
+      { ok: pointed, reason: 'File replace reported success but the document still points at the old file' },
+    ], req, { docId: String(doc._id), newUrl, originalname: req.file.originalname });
+
     await audit(req, {
       action: 'update.document_file', category: 'content',
       targetType: 'document', targetId: String(doc._id), targetName: doc.name,
@@ -4090,6 +4213,76 @@ app.get('/api/image-proxy', requireAuth, async (req, res) => {
   }
 });
 
+// --------------- Error reporting & the Errors tab ---------------
+
+// The browser reports its own failures here (React error boundary, window
+// errors, unhandled rejections, unreachable-backend detection). Open to any
+// caller (readers included); the actor is filled in from the token if present.
+app.post('/api/client-errors', async (req, res) => {
+  try {
+    const decoded = decodeToken(req);
+    const b = req.body || {};
+    const allowed = new Set(['frontend', 'dependency', 'unknown']);
+    await logError({
+      source: 'frontend',
+      category: allowed.has(b.category) ? b.category : 'frontend',
+      status: Number(b.status) || 0,
+      method: 'CLIENT',
+      route: String(b.route || b.url || '').slice(0, 300),
+      message: String(b.message || '').slice(0, 2000),
+      reason: String(b.reason || b.message || '').slice(0, 2000),
+      stack: String(b.stack || '').slice(0, 8000),
+      actorEmail: (decoded && decoded.email) || '',
+      req,
+      context: b.context && typeof b.context === 'object' ? b.context : undefined,
+    });
+    res.json({ success: true });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// The Errors tab: newest-first list with filters and simple counts.
+app.get('/api/error-logs', requireAdmin, async (req, res) => {
+  try {
+    const q = {};
+    if (req.query.source) q.source = qStr(req.query.source);
+    if (req.query.category) q.category = qStr(req.query.category);
+    if (req.query.kind === 'human') q.category = { $in: [...HUMAN_CATEGORIES] };
+    if (req.query.kind === 'code') q.category = { $nin: [...HUMAN_CATEGORIES] };
+    if (req.query.q) {
+      const rx = new RegExp(escapeRegex(qStr(req.query.q)), 'i');
+      q.$or = [{ reason: rx }, { message: rx }, { route: rx }, { refId: rx }, { actorEmail: rx }];
+    }
+    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    const [items, total, codeCount] = await Promise.all([
+      ErrorLog.find(q).sort({ at: -1 }).limit(limit).lean(),
+      ErrorLog.countDocuments({}),
+      ErrorLog.countDocuments({ category: { $nin: [...HUMAN_CATEGORIES] } }),
+    ]);
+    res.json({
+      items: items.map(i => ({ ...i, id: i._id.toString(), kind: HUMAN_CATEGORIES.has(i.category) ? 'human' : 'code' })),
+      total, codeCount,
+    });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// Toggle a single entry's resolved flag.
+app.patch('/api/error-logs/:id', requireAdmin, async (req, res) => {
+  try {
+    const doc = await ErrorLog.findByIdAndUpdate(req.params.id, { resolved: !!req.body.resolved }, { new: true }).lean();
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// Clear all (or only the resolved) error entries.
+app.delete('/api/error-logs', requireAdmin, async (req, res) => {
+  try {
+    const filter = req.query.onlyResolved === '1' ? { resolved: true } : {};
+    const r = await ErrorLog.deleteMany(filter);
+    res.json({ success: true, deleted: r.deletedCount || 0 });
+  } catch (err) { sendServerError(res, err); }
+});
+
 // --------------- Error handling (backstop) ---------------
 
 // Unknown API path -> clean 404.
@@ -4102,6 +4295,9 @@ app.use((err, req, res, next) => {
   if (err && err.expose && err.status && err.status < 500) {
     return res.status(err.status).json({ error: err.message });
   }
+  // Stash for the failure interceptor's finish-logger (records it once, w/ stack).
+  res._errStack = (err && err.stack) || String(err);
+  res._errMessage = (err && err.message) || String(err);
   console.error(`[unhandled ${req.method} ${req.originalUrl}]`, (err && err.stack) || err);
   res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });

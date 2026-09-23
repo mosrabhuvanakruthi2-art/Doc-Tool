@@ -6,12 +6,16 @@ import { AuthProvider } from './AuthContext';
 import { msalInstance } from './msalConfig';
 import { handleMicrosoftCallback } from './msalOauth';
 import App from './App';
+import ErrorBoundary from './components/ErrorBoundary';
 import './index.css';
 import { installApiAuth } from './apiAuth';
+import { installClientErrorReporting } from './reportClientError';
 
 // Must run before any request is made, so writes carry the user identity that
 // version history records as "updated by".
 installApiAuth();
+// Catch window errors / unhandled rejections and report them to the Errors tab.
+installClientErrorReporting();
 
 msalInstance.initialize().then(async () => {
   let msRedirectToken = null;
@@ -40,14 +44,16 @@ msalInstance.initialize().then(async () => {
   }
 
   ReactDOM.createRoot(document.getElementById('root')).render(
-    <MsalProvider instance={msalInstance}>
-      <BrowserRouter>
-        <AuthProvider msRedirectToken={msRedirectToken} msRedirectError={msRedirectError}>
-          <ProductConfigProvider>
-            <App />
-          </ProductConfigProvider>
-        </AuthProvider>
-      </BrowserRouter>
-    </MsalProvider>
+    <ErrorBoundary>
+      <MsalProvider instance={msalInstance}>
+        <BrowserRouter>
+          <AuthProvider msRedirectToken={msRedirectToken} msRedirectError={msRedirectError}>
+            <ProductConfigProvider>
+              <App />
+            </ProductConfigProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </MsalProvider>
+    </ErrorBoundary>
   );
 });

@@ -40,11 +40,12 @@ export default function SalesPage() {
   const [features, setFeatures] = useState([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState('migrates');
+  const [query, setQuery] = useState('');
 
   const product = searchParams.get('product') || productTypes[0] || '';
 
-  const selectProduct = (pt) => { setSearchParams({ product: pt }); setView('migrates'); };
-  const selectCombo = (name) => { setSearchParams({ product, combination: name }); setView('migrates'); };
+  const selectProduct = (pt) => { setSearchParams({ product: pt }); setView('migrates'); setQuery(''); };
+  const selectCombo = (name) => { setSearchParams({ product, combination: name }); setView('migrates'); setQuery(''); };
 
   useEffect(() => {
     if (!product) return;
@@ -77,7 +78,10 @@ export default function SalesPage() {
   const comboFeats = features.filter((f) => f.combination === combo);
   const migrates = comboFeats.filter((f) => f.scope === 'inscope');
   const limits = comboFeats.filter((f) => f.scope === 'outscope');
-  const groups = groupByFamily(view === 'migrates' ? migrates : limits);
+  const q = query.trim().toLowerCase();
+  const match = (f) => !q || (f.name || '').toLowerCase().includes(q) || (f.description || '').toLowerCase().includes(q) || (f.family || '').toLowerCase().includes(q);
+  const shown = (view === 'migrates' ? migrates : limits).filter(match);
+  const groups = groupByFamily(shown);
   const updated = newestLabel(comboFeats);
 
   return (
@@ -122,29 +126,44 @@ export default function SalesPage() {
           ) : (
             <>
               <div className="sales-main-head">
-                <div>
+                <div className="sales-head-left">
                   <h1 className="sales-title">{toArrow(combo)}</h1>
-                  {updated && <p className="sales-updated">{updated}</p>}
+                  {updated && <span className="sales-updated">{updated}</span>}
+                </div>
+                <div className="sales-feature-search">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                  <input
+                    type="text"
+                    value={query}
+                    placeholder="Search this combination…"
+                    onChange={(e) => setQuery(e.target.value)}
+                    aria-label="Search this combination"
+                  />
+                  {query && <button className="sales-feature-search-clear" onClick={() => setQuery('')} aria-label="Clear">×</button>}
                 </div>
               </div>
 
               <div className="sales-pills">
-                <span className="sales-pill sales-pill-good">✓ {migrates.length} feature{migrates.length !== 1 ? 's' : ''} migrate</span>
-                <span className="sales-pill sales-pill-warn">⚠ {limits.length} limitation{limits.length !== 1 ? 's' : ''}</span>
+                <span className="sales-pill sales-pill-good">{migrates.length} feature{migrates.length !== 1 ? 's' : ''} migrate</span>
+                <span className="sales-pill sales-pill-warn">{limits.length} limitation{limits.length !== 1 ? 's' : ''}</span>
               </div>
 
               <div className="sales-toggle">
                 <button className={`sales-toggle-btn${view === 'migrates' ? ' active' : ''}`} onClick={() => setView('migrates')}>
-                  ✓ What Migrates
+                  What Migrates
                 </button>
                 <button className={`sales-toggle-btn${view === 'limits' ? ' active' : ''}`} onClick={() => setView('limits')}>
-                  ⚠ Limitations
+                  Limitations
                 </button>
               </div>
 
               {groups.length === 0 ? (
                 <div className="sales-empty-main">
-                  {view === 'migrates' ? 'No migrate items recorded for this combination.' : 'No limitations recorded — everything migrates. 🎉'}
+                  {q
+                    ? `No ${view === 'migrates' ? 'migrate items' : 'limitations'} match “${query.trim()}”.`
+                    : view === 'migrates' ? 'No migrate items recorded for this combination.' : 'No limitations recorded — everything migrates. 🎉'}
                 </div>
               ) : view === 'migrates' ? (
                 groups.map(([family, items]) => (
@@ -152,7 +171,7 @@ export default function SalesPage() {
                     <h3 className="sales-group-title">{family}</h3>
                     <div className="sales-chip-row">
                       {items.map((f) => (
-                        <span className="sales-chip sales-chip-good" key={f.id || f._id || f.name}>✓ {f.name}</span>
+                        <span className="sales-chip sales-chip-good" key={f.id || f._id || f.name}>{f.name}</span>
                       ))}
                     </div>
                   </section>

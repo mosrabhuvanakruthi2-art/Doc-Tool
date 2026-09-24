@@ -99,20 +99,18 @@ export default function SalesPage() {
 
   return (
     <div className="sales-page">
-      {/* Product-type tabs */}
-      <div className="sales-tabs">
-        {productTypes.map((pt) => (
-          <button
-            key={pt}
-            className={`sales-tab${pt === product ? ' active' : ''}`}
-            onClick={() => selectProduct(pt)}
-          ><TabIcon name={pt} />{pt}</button>
-        ))}
-      </div>
-
       <div className="sales-body">
-        {/* Sidebar: combinations (search via the navbar) */}
+        {/* Sidebar: product-type tabs on top, then combinations */}
         <aside className="sales-sidebar">
+          <div className="sales-tabs">
+            {productTypes.map((pt) => (
+              <button
+                key={pt}
+                className={`sales-tab${pt === product ? ' active' : ''}`}
+                onClick={() => selectProduct(pt)}
+              ><TabIcon name={pt} />{pt}</button>
+            ))}
+          </div>
           <div className="sales-combo-list">
             {combos.map((c) => (
               <button

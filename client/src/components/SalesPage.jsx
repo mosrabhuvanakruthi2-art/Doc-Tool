@@ -10,6 +10,19 @@ import CfLoader from './CfLoader';
 
 const toArrow = (name) => String(name || '').replace(/\s+to\s+/i, ' → ');
 
+// Pick an icon for a product type by keyword, with a generic fallback so any
+// dynamically-added product type still gets a sensible glyph.
+function TabIcon({ name }) {
+  const n = String(name || '').toLowerCase();
+  const p = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' };
+  if (/mail|email|outlook|gmail/.test(n)) return (<svg {...p}><rect x="2" y="4" width="20" height="16" rx="2" /><path d="m22 7-10 6L2 7" /></svg>);
+  if (/message|chat|slack|teams|talk/.test(n)) return (<svg {...p}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>);
+  if (/content|doc|file|drive|storage/.test(n)) return (<svg {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg>);
+  if (/calendar|event|meeting/.test(n)) return (<svg {...p}><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /></svg>);
+  if (/contact|people|user|team/.test(n)) return (<svg {...p}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /></svg>);
+  return (<svg {...p}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>);
+}
+
 function groupByFamily(feats) {
   const m = new Map();
   feats.forEach((f) => {
@@ -93,7 +106,7 @@ export default function SalesPage() {
             key={pt}
             className={`sales-tab${pt === product ? ' active' : ''}`}
             onClick={() => selectProduct(pt)}
-          >{pt}</button>
+          ><TabIcon name={pt} />{pt}</button>
         ))}
       </div>
 

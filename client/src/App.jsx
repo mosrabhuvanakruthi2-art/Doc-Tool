@@ -9,6 +9,7 @@ const CompatibilityTable = lazy(() => import('./components/CompatibilityTable'))
 const CloudInfoPage = lazy(() => import('./components/CloudInfoPage'));
 const DocumentPage = lazy(() => import('./components/DocumentPage'));
 const AdminPage = lazy(() => import('./components/AdminPage'));
+const SalesPage = lazy(() => import('./components/SalesPage'));
 import AdminLogin from './components/AdminLogin';
 import ToastContainer from './components/Toast';
 import CfLoader from './components/CfLoader';
@@ -142,6 +143,21 @@ function App() {
       <ToastContainer />
       <Routes>
         <Route path="/admin" element={<AdminRoute darkMode={darkMode} setDarkMode={setDarkMode} />} />
+        <Route
+          path="/sales"
+          element={
+            user ? (
+              <>
+                <Header darkMode={darkMode} onToggleDark={() => setDarkMode(!darkMode)} isAdmin={false} onLogout={logout} user={user} />
+                <div className="app-body">
+                  <Suspense fallback={<CfLoader />}><SalesPage /></Suspense>
+                </div>
+              </>
+            ) : (
+              <DocsLogin />
+            )
+          }
+        />
         <Route
           path="/"
           element={

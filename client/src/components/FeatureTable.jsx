@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { useProductConfig } from '../ProductConfigContext';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, BorderStyle as DocBorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
@@ -59,6 +59,10 @@ function WelcomePage() {
         <p className="welcome-subtitle">
           Select a product type, compatibility matrix, or cloud document from the sidebar to get started.
         </p>
+        <Link to="/sales" className="welcome-sales-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/></svg>
+          Open Sales View — what migrates &amp; limitations
+        </Link>
       </div>
 
       <div className="welcome-stats">

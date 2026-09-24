@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams, useLocation } from 'react-router-dom';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
 
@@ -15,9 +15,11 @@ function getInitials(name, email) {
 
 function Header({ darkMode, onToggleDark, isAdmin, onLogout, user }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
   const section = searchParams.get('section') || 'inscope';
+  const onReader = location.pathname === '/';
 
   const handleSectionToggle = (value) => {
     const params = new URLSearchParams(searchParams);
@@ -45,7 +47,7 @@ function Header({ darkMode, onToggleDark, isAdmin, onLogout, user }) {
 
       {!isAdmin && (
         <div className="header-center">
-          {!searchParams.get('view') && searchParams.get('product') && (
+          {onReader && !searchParams.get('view') && searchParams.get('product') && (
             <div className="section-toggle">
               <button className={`toggle-btn ${section === 'inscope' ? 'active' : ''}`} onClick={() => handleSectionToggle('inscope')}>Inscope</button>
               <button className={`toggle-btn ${section === 'outscope' ? 'active' : ''}`} onClick={() => handleSectionToggle('outscope')}>Outscope</button>

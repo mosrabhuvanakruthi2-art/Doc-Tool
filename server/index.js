@@ -1628,6 +1628,7 @@ function mapFeature(f) {
     screenshots: f.screenshots,
     order: f.order || 0,
     createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
   };
 }
 

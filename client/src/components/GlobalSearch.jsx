@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 
 const TYPE_LABEL = {
   combination: 'Combination',
@@ -14,6 +14,8 @@ const TYPE_LABEL = {
 // navigates to the picked result. Restricted documents never appear.
 export default function GlobalSearch() {
   const [, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [q, setQ] = useState('');
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
@@ -22,6 +24,8 @@ export default function GlobalSearch() {
   const boxRef = useRef(null);
   const timer = useRef(null);
   const abortRef = useRef(null);
+  // On the Sales page the navbar search is a combination finder only.
+  const onSales = location.pathname === '/sales';
 
   const run = useCallback(async (text) => {
     if (text.trim().length < 2) { setResults([]); setLoading(false); return; }
@@ -33,11 +37,16 @@ export default function GlobalSearch() {
     try {
       const res = await fetch('/api/search?q=' + encodeURIComponent(text.trim()), { signal: ctrl.signal });
       const data = await res.json();
-      if (!ctrl.signal.aborted) { setResults(res.ok ? (data.results || []) : []); setLoading(false); }
+      if (!ctrl.signal.aborted) {
+        let out = res.ok ? (data.results || []) : [];
+        if (onSales) out = out.filter((r) => r.type === 'combination'); // sales: combinations only
+        setResults(out);
+        setLoading(false);
+      }
     } catch (e) {
       if (e.name !== 'AbortError') { setResults([]); setLoading(false); }
     }
-  }, []);
+  }, [onSales]);
 
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
@@ -53,10 +62,16 @@ export default function GlobalSearch() {
 
   const go = (item) => {
     if (!item) return;
-    // Navigate exactly like the sidebar does — update the query params on the
-    // current route so the reader re-renders the picked view/combination.
-    const qs = (item.url.split('?')[1] || '');
-    setSearchParams(new URLSearchParams(qs));
+    const params = new URLSearchParams(item.url.split('?')[1] || '');
+    if (onSales) {
+      // Stay on /sales and just select that combination (product + combination).
+      setSearchParams({ product: params.get('product') || '', combination: params.get('combination') || '' });
+    } else if (location.pathname === '/') {
+      // Reader: update params in place (same as the sidebar).
+      setSearchParams(params);
+    } else {
+      navigate(item.url);
+    }
     setOpen(false);
     setQ('');
     setResults([]);
@@ -78,7 +93,7 @@ export default function GlobalSearch() {
         <input
           type="text"
           value={q}
-          placeholder="Search…"
+          placeholder={onSales ? 'Search combinations…' : 'Search…'}
           onChange={(e) => { setQ(e.target.value); setOpen(true); setActive(-1); }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKey}

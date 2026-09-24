@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useProductConfig } from '../ProductConfigContext';
 import CfLoader from './CfLoader';
@@ -54,11 +54,13 @@ export default function SalesPage() {
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState('migrates');
   const [query, setQuery] = useState('');
+  const [openLimit, setOpenLimit] = useState(null); // which limitation reason is expanded
 
   const product = searchParams.get('product') || productTypes[0] || '';
 
-  const selectProduct = (pt) => { setSearchParams({ product: pt }); setView('migrates'); setQuery(''); };
-  const selectCombo = (name) => { setSearchParams({ product, combination: name }); setView('migrates'); setQuery(''); };
+  const showView = (v) => { setView(v); setOpenLimit(null); };
+  const selectProduct = (pt) => { setSearchParams({ product: pt }); setView('migrates'); setQuery(''); setOpenLimit(null); };
+  const selectCombo = (name) => { setSearchParams({ product, combination: name }); setView('migrates'); setQuery(''); setOpenLimit(null); };
 
   useEffect(() => {
     if (!product) return;
@@ -157,10 +159,10 @@ export default function SalesPage() {
               </div>
 
               <div className="sales-toggle">
-                <button className={`sales-toggle-btn is-good${view === 'migrates' ? ' active' : ''}`} onClick={() => setView('migrates')}>
+                <button className={`sales-toggle-btn is-good${view === 'migrates' ? ' active' : ''}`} onClick={() => showView('migrates')}>
                   What Migrates <span className="sales-toggle-count">{migrates.length}</span>
                 </button>
-                <button className={`sales-toggle-btn is-warn${view === 'limits' ? ' active' : ''}`} onClick={() => setView('limits')}>
+                <button className={`sales-toggle-btn is-warn${view === 'limits' ? ' active' : ''}`} onClick={() => showView('limits')}>
                   Limitations <span className="sales-toggle-count">{limits.length}</span>
                 </button>
               </div>
@@ -187,16 +189,28 @@ export default function SalesPage() {
                   <section className="sales-group" key={family}>
                     <h3 className="sales-group-title is-warn">{family}</h3>
                     <div className="sales-chip-row">
-                      {items.map((f) => (
-                        <span
-                          className={`sales-chip sales-chip-warn${f.description ? ' has-tip' : ''}`}
-                          key={f.id || f._id || f.name}
-                          tabIndex={f.description ? 0 : undefined}
-                        >
-                          {f.name}
-                          {f.description && <span className="sales-chip-tip" role="tooltip">{f.description}</span>}
-                        </span>
-                      ))}
+                      {items.map((f) => {
+                        const id = f.id || f._id || f.name;
+                        const isOpen = openLimit === id;
+                        return (
+                          <Fragment key={id}>
+                            <button
+                              type="button"
+                              className={`sales-chip sales-chip-warn${f.description ? ' has-reason' : ''}${isOpen ? ' open' : ''}`}
+                              onClick={() => f.description && setOpenLimit(isOpen ? null : id)}
+                              aria-expanded={f.description ? isOpen : undefined}
+                            >
+                              {f.name}
+                              {f.description && (
+                                <svg className="sales-chip-caret" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+                              )}
+                            </button>
+                            {isOpen && f.description && (
+                              <div className="sales-limit-reason-panel">{f.description}</div>
+                            )}
+                          </Fragment>
+                        );
+                      })}
                     </div>
                   </section>
                 ))

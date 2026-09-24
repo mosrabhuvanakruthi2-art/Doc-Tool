@@ -6363,7 +6363,7 @@ a:hover { text-decoration: underline; }
 .sales-main { flex: 1; overflow-y: auto; padding: 28px 28px 48px; min-width: 0; }
 .sales-main > * { width: 100%; max-width: 860px; margin-left: auto; margin-right: auto; }
 .sales-main-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
-.sales-head-left { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.sales-head-left { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .sales-title { font-size: 24px; font-weight: 800; margin: 0; letter-spacing: -0.3px; }
 .sales-updated { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
 .sales-feature-search { display: flex; align-items: center; gap: 7px; flex-shrink: 0; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 999px; background: var(--bg-secondary); color: var(--text-muted); width: 260px; max-width: 100%; }
@@ -6374,8 +6374,8 @@ a:hover { text-decoration: underline; }
 .sales-pill { padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 700; }
 .sales-pill-good { background: rgba(22,163,74,0.15); color: #16a34a; }
 .sales-pill-warn { background: rgba(217,119,6,0.15); color: #d97706; }
-.sales-toggle { display: flex; width: fit-content; gap: 4px; padding: 4px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; margin: 0 auto 28px; }
-.sales-toggle-btn { padding: 8px 18px; border: 0; background: transparent; color: var(--text-secondary); font-size: 13.5px; font-weight: 600; font-family: var(--font-family); border-radius: 999px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+.sales-toggle { display: flex; width: fit-content; gap: 0; padding: 0; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; overflow: hidden; margin: 0 auto 28px; }
+.sales-toggle-btn { padding: 9px 20px; border: 0; background: transparent; color: var(--text-secondary); font-size: 13.5px; font-weight: 600; font-family: var(--font-family); border-radius: 999px; cursor: pointer; transition: background 0.15s, color 0.15s; }
 .sales-toggle-btn:hover { color: var(--text-primary); }
 .sales-toggle-btn.active { background: var(--accent); color: #fff; }
 .sales-group { margin-bottom: 24px; }

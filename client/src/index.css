@@ -6346,10 +6346,10 @@ a:hover { text-decoration: underline; }
 
 /* ---------------- Sales / Migration Reference page ---------------- */
 .sales-page { flex: 1; display: flex; flex-direction: column; min-width: 0; height: calc(100vh - 72px); background: var(--bg-primary); color: var(--text-primary); font-family: var(--font-family); }
-.sales-tabs { display: flex; gap: 4px; padding: 10px 8px; border-bottom: 1px solid var(--border-color); background: var(--bg-secondary); flex-shrink: 0; }
-.sales-tab { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 6px; border: 0; background: transparent; color: var(--text-secondary); font-size: 12.5px; font-weight: 600; font-family: var(--font-family); cursor: pointer; border-radius: 8px; white-space: nowrap; }
-.sales-tab:hover { background: var(--bg-primary); color: var(--text-primary); }
-.sales-tab.active { background: var(--accent); color: #fff; }
+.sales-tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--border-color); background: var(--bg-secondary); flex-shrink: 0; }
+.sales-tab { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 6px; border: 0; background: transparent; color: var(--text-secondary); font-size: 12.5px; font-weight: 600; font-family: var(--font-family); cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+.sales-tab:hover { color: var(--text-primary); }
+.sales-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .sales-tab svg { flex-shrink: 0; opacity: 0.85; }
 .sales-tab.active svg { opacity: 1; }
 .sales-body { flex: 1; display: flex; min-height: 0; }

@@ -6380,15 +6380,19 @@ a:hover { text-decoration: underline; }
 .sales-toggle-btn { padding: 9px 20px; border: 0; background: transparent; color: var(--text-secondary); font-size: 13.5px; font-weight: 600; font-family: var(--font-family); border-radius: 999px; cursor: pointer; transition: background 0.15s, color 0.15s; }
 .sales-toggle-btn:hover { color: var(--text-primary); }
 .sales-toggle-btn.active { background: var(--accent); color: #fff; }
-.sales-group { margin-bottom: 24px; }
-.sales-group-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); margin: 0 0 12px; }
+.sales-group { margin-bottom: 26px; }
+.sales-group-title { display: flex; align-items: center; gap: 9px; font-size: 13.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-primary); margin: 0 0 14px; padding-bottom: 9px; border-bottom: 1px solid var(--border-color); }
+.sales-group-title::before { content: ''; width: 4px; height: 15px; border-radius: 2px; background: var(--accent); flex-shrink: 0; }
+.sales-group-title.is-good::before { background: #16a34a; }
+.sales-group-title.is-warn::before { background: #d97706; }
 .sales-chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .sales-chip { padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; }
 .sales-chip-good { background: rgba(22,163,74,0.12); color: #15803d; border: 1px solid rgba(22,163,74,0.25); }
-.sales-limit-list { display: flex; flex-direction: column; gap: 10px; }
-.sales-limit-card { border: 1px solid var(--border-color); border-left: 3px solid #d97706; border-radius: 8px; padding: 12px 16px; background: var(--bg-secondary); }
-.sales-limit-name { font-weight: 700; font-size: 14px; }
-.sales-limit-reason { color: var(--text-secondary); font-size: 13px; margin-top: 5px; line-height: 1.6; }
+.sales-chip-warn { background: rgba(217,119,6,0.10); color: #b45309; border: 1px solid rgba(217,119,6,0.30); }
+.sales-chip.has-tip { position: relative; cursor: help; outline: none; }
+.sales-chip-tip { display: none; position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 30; width: max-content; max-width: 320px; padding: 10px 12px; border-radius: 8px; background: #1f2937; color: #f9fafb; font-size: 12.5px; font-weight: 500; line-height: 1.55; text-transform: none; letter-spacing: 0; white-space: normal; box-shadow: 0 8px 24px rgba(0,0,0,0.25); pointer-events: none; }
+.sales-chip-tip::after { content: ''; position: absolute; top: 100%; left: 16px; border: 6px solid transparent; border-top-color: #1f2937; }
+.sales-chip.has-tip:hover .sales-chip-tip, .sales-chip.has-tip:focus .sales-chip-tip, .sales-chip.has-tip:focus-visible .sales-chip-tip { display: block; }
 .sales-empty, .sales-empty-main { color: var(--text-muted); font-size: 13px; padding: 16px; text-align: center; }
 .sales-empty-main { padding: 40px 20px; font-size: 15px; }
 @media (max-width: 720px) {

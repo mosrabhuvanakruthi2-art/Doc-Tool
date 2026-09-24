@@ -179,7 +179,7 @@ export default function SalesPage() {
               ) : view === 'migrates' ? (
                 groups.map(([family, items]) => (
                   <section className="sales-group" key={family}>
-                    <h3 className="sales-group-title">{family}</h3>
+                    <h3 className="sales-group-title is-good">{family}</h3>
                     <div className="sales-chip-row">
                       {items.map((f) => (
                         <span className="sales-chip sales-chip-good" key={f.id || f._id || f.name}>{f.name}</span>
@@ -190,13 +190,17 @@ export default function SalesPage() {
               ) : (
                 groups.map(([family, items]) => (
                   <section className="sales-group" key={family}>
-                    <h3 className="sales-group-title">{family}</h3>
-                    <div className="sales-limit-list">
+                    <h3 className="sales-group-title is-warn">{family}</h3>
+                    <div className="sales-chip-row">
                       {items.map((f) => (
-                        <div className="sales-limit-card" key={f.id || f._id || f.name}>
-                          <div className="sales-limit-name">{f.name}</div>
-                          {f.description && <div className="sales-limit-reason">{f.description}</div>}
-                        </div>
+                        <span
+                          className={`sales-chip sales-chip-warn${f.description ? ' has-tip' : ''}`}
+                          key={f.id || f._id || f.name}
+                          tabIndex={f.description ? 0 : undefined}
+                        >
+                          {f.name}
+                          {f.description && <span className="sales-chip-tip" role="tooltip">{f.description}</span>}
+                        </span>
                       ))}
                     </div>
                   </section>

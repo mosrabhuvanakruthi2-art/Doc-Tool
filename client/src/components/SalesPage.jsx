@@ -156,17 +156,12 @@ export default function SalesPage() {
                 </div>
               </div>
 
-              <div className="sales-pills">
-                <span className="sales-pill sales-pill-good">{migrates.length} feature{migrates.length !== 1 ? 's' : ''} migrate</span>
-                <span className="sales-pill sales-pill-warn">{limits.length} limitation{limits.length !== 1 ? 's' : ''}</span>
-              </div>
-
               <div className="sales-toggle">
-                <button className={`sales-toggle-btn${view === 'migrates' ? ' active' : ''}`} onClick={() => setView('migrates')}>
-                  What Migrates
+                <button className={`sales-toggle-btn is-good${view === 'migrates' ? ' active' : ''}`} onClick={() => setView('migrates')}>
+                  What Migrates <span className="sales-toggle-count">{migrates.length}</span>
                 </button>
-                <button className={`sales-toggle-btn${view === 'limits' ? ' active' : ''}`} onClick={() => setView('limits')}>
-                  Limitations
+                <button className={`sales-toggle-btn is-warn${view === 'limits' ? ' active' : ''}`} onClick={() => setView('limits')}>
+                  Limitations <span className="sales-toggle-count">{limits.length}</span>
                 </button>
               </div>
 

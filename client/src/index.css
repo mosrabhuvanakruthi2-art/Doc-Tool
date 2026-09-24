@@ -6372,14 +6372,14 @@ a:hover { text-decoration: underline; }
 .sales-feature-search:focus-within { border-color: var(--accent); }
 .sales-feature-search input { flex: 1; min-width: 0; border: 0; background: transparent; outline: none; color: var(--text-primary); font-size: 13.5px; font-family: var(--font-family); }
 .sales-feature-search-clear { border: 0; background: transparent; color: var(--text-muted); font-size: 17px; line-height: 1; cursor: pointer; padding: 0 2px; }
-.sales-pills { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin: 18px auto; }
-.sales-pill { padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 700; }
-.sales-pill-good { background: rgba(22,163,74,0.15); color: #16a34a; }
-.sales-pill-warn { background: rgba(217,119,6,0.15); color: #d97706; }
-.sales-toggle { display: flex; width: fit-content; gap: 0; padding: 0; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; overflow: hidden; margin: 0 auto 28px; }
-.sales-toggle-btn { padding: 9px 20px; border: 0; background: transparent; color: var(--text-secondary); font-size: 13.5px; font-weight: 600; font-family: var(--font-family); border-radius: 999px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+.sales-toggle { display: flex; width: fit-content; gap: 0; padding: 0; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; overflow: hidden; margin: 18px auto 28px; }
+.sales-toggle-btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 20px; border: 0; background: transparent; color: var(--text-secondary); font-size: 13.5px; font-weight: 600; font-family: var(--font-family); border-radius: 999px; cursor: pointer; transition: background 0.15s, color 0.15s; }
 .sales-toggle-btn:hover { color: var(--text-primary); }
+.sales-toggle-count { min-width: 20px; padding: 1px 7px; border-radius: 999px; font-size: 11.5px; font-weight: 800; background: var(--bg-primary); color: var(--text-secondary); }
+.sales-toggle-btn.is-good .sales-toggle-count { background: rgba(22,163,74,0.15); color: #16a34a; }
+.sales-toggle-btn.is-warn .sales-toggle-count { background: rgba(217,119,6,0.15); color: #d97706; }
 .sales-toggle-btn.active { background: var(--accent); color: #fff; }
+.sales-toggle-btn.active .sales-toggle-count { background: rgba(255,255,255,0.25); color: #fff; }
 .sales-group { margin-bottom: 26px; }
 .sales-group-title { display: flex; align-items: center; gap: 9px; font-size: 13.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-primary); margin: 0 0 14px; padding-bottom: 9px; border-bottom: 1px solid var(--border-color); }
 .sales-group-title::before { content: ''; width: 4px; height: 15px; border-radius: 2px; background: var(--accent); flex-shrink: 0; }

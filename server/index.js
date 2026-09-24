@@ -145,6 +145,7 @@ const PUBLIC_API = [
   /^\/api\/auth\//,           // login, verify, microsoft exchange, logout
   /^\/api\/admin\/login$/,    // admin password login
   /^\/api\/client-errors$/,   // browser error reports may fire before login
+  /^\/api\/internal\//,       // machine API — has its OWN auth (requireInternalKey: X-Internal-Key + origin/IP allowlist)
 ];
 app.use('/api', (req, res, next) => {
   const path = req.originalUrl.split('?')[0];
@@ -162,6 +163,12 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 const FULL_PERMISSIONS = { productTypes: true, compatibility: true, cloudInfo: true, documents: true };
+
+// Session lifetimes. Viewers get a long, convenient session so a link opened in
+// a new tab stays signed in for a month; admins are shorter because the
+// env-admin token has no DB-side revocation. Tune via env if needed.
+const USER_TOKEN_TTL = process.env.USER_TOKEN_TTL || '30d';
+const ADMIN_TOKEN_TTL = process.env.ADMIN_TOKEN_TTL || '7d';
 
 // Unexpected errors are logged in full server-side and returned to the client as
 // a generic message, so internal details (stack, driver errors) never leak.
@@ -216,7 +223,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
     if (email === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
       const payload = { email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS };
-      const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+      const token = jwt.sign(payload, JWT_SECRET, { expiresIn: ADMIN_TOKEN_TTL });
       await audit(req, {
         action: 'auth.login', category: 'auth',
         actorEmail: ADMIN_EMAIL, actorName: 'Admin', actorRole: 'admin',
@@ -259,7 +266,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
     const perms = user.role === 'admin' ? FULL_PERMISSIONS : (user.permissions || FULL_PERMISSIONS);
     const payload = { userId: user._id.toString(), email: user.email, role: user.role, permissions: perms };
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: user.role === 'admin' ? ADMIN_TOKEN_TTL : USER_TOKEN_TTL });
     await audit(req, {
       action: 'auth.login', category: 'auth',
       actorEmail: user.email, actorName: user.name || '', actorRole: user.role,
@@ -300,7 +307,7 @@ app.post('/api/admin/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   const attempted = String(email || '').toLowerCase().trim();
   if (attempted === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
-    const token = jwt.sign({ email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: '8h' });
+    const token = jwt.sign({ email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: ADMIN_TOKEN_TTL });
     await audit(req, {
       action: 'auth.admin_login', category: 'auth',
       actorEmail: ADMIN_EMAIL, actorName: 'Admin', actorRole: 'admin',
@@ -311,7 +318,7 @@ app.post('/api/admin/login', authLimiter, async (req, res) => {
   }
   const user = await User.findOne({ email: attempted, role: 'admin', isActive: true });
   if (user && await user.comparePassword(password)) {
-    const token = jwt.sign({ userId: user._id.toString(), email: user.email, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: '8h' });
+    const token = jwt.sign({ userId: user._id.toString(), email: user.email, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: ADMIN_TOKEN_TTL });
     await audit(req, {
       action: 'auth.admin_login', category: 'auth',
       actorEmail: user.email, actorName: user.name || '', actorRole: 'admin',
@@ -437,7 +444,7 @@ app.post('/api/auth/microsoft/exchange', authLimiter, async (req, res) => {
     } catch {}
 
     const payload = { email, name, role, permissions };
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: role === 'admin' ? ADMIN_TOKEN_TTL : USER_TOKEN_TTL });
     await audit(req, {
       action: 'auth.microsoft_login', category: 'auth',
       actorEmail: email, actorName: name || '', actorRole: role,
@@ -477,7 +484,7 @@ app.post('/api/auth/microsoft', authLimiter, async (req, res) => {
     } catch {}
 
     const payload = { email, name, role, permissions };
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: role === 'admin' ? ADMIN_TOKEN_TTL : USER_TOKEN_TTL });
     await audit(req, {
       action: 'auth.microsoft_login', category: 'auth',
       actorEmail: email, actorName: name || '', actorRole: role,
@@ -1639,7 +1646,7 @@ app.get('/api/features', async (req, res) => {
 
     if (search) {
       const regex = new RegExp(escapeRegex(search), 'i');
-      filter.$or = [{ name: regex }, { description: regex }];
+      filter.$or = [{ name: regex }, { description: regex }, { family: regex }];
     }
 
     if (tag && tag !== 'All') {
@@ -3157,6 +3164,100 @@ app.get('/api/documents', async (req, res) => {
         };
       }),
     });
+  } catch (err) { sendServerError(res, err); }
+});
+
+// Global search across everything the signed-in user is allowed to see:
+// feature combinations, individual features, compatibility matrices, cloud info
+// and documents. Restricted documents (no access) are excluded from results.
+const stripHtml = (s) => String(s || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+function snippet(text, rx, len = 90) {
+  const t = stripHtml(text);
+  const m = t.match(rx);
+  if (!m) return t.slice(0, len);
+  const i = Math.max(0, t.toLowerCase().indexOf(m[0].toLowerCase()) - 30);
+  return (i > 0 ? '…' : '') + t.slice(i, i + len).trim() + (i + len < t.length ? '…' : '');
+}
+
+app.get('/api/search', async (req, res) => {
+  try {
+    const raw = qStr(req.query.q).trim();
+    if (raw.length < 2) return res.json({ results: [] });
+    const rx = new RegExp(escapeRegex(raw), 'i');
+    const results = [];
+    const sectionOf = (scope) => (scope === 'outscope' ? 'outscope' : 'inscope');
+    const featureUrl = (f) => '/?' + new URLSearchParams({
+      product: f.productType || '', combination: f.combination || '', section: sectionOf(f.scope),
+    }).toString();
+
+    // Run every lookup in parallel — sequential awaits to Atlas were the slow
+    // part (one network round-trip each). grantsFor/liveFolders are needed only
+    // for the document access check but are tiny, so we fetch them concurrently.
+    const [feats, mats, infos, docs, access, folders] = await Promise.all([
+      Feature.find({
+        isDeleted: { $ne: true },
+        $or: [{ combination: rx }, { name: rx }, { description: rx }, { productType: rx }],
+      }).select('name description combination productType scope').limit(200).maxTimeMS(4000).lean(),
+      CompatibilityMatrix.find({ isDeleted: { $ne: true }, name: rx })
+        .select('name slug').limit(10).maxTimeMS(4000).lean(),
+      // Match by name only: cloud-info bodies embed multi-MB base64 images, and a
+      // regex over those made live search ~2s. Body-text search can be added
+      // later via a maintained plain-text index.
+      CloudInfo.find({ isDeleted: { $ne: true }, name: rx })
+        .select('name slug').limit(10).maxTimeMS(4000).lean(),
+      DocModel.find({ isDeleted: { $ne: true }, name: rx })
+        .select('name slug folderId').limit(40).maxTimeMS(4000).lean(),
+      grantsFor(req),
+      liveFolders(),
+    ]);
+
+    // Distinct combinations that match (e.g. "Slack to Chat").
+    const comboSeen = new Set();
+    for (const f of feats) {
+      const combo = (f.combination || '').trim();
+      const key = (f.productType || '') + '|' + combo;
+      if (combo && rx.test(combo) && !comboSeen.has(key)) {
+        comboSeen.add(key);
+        results.push({ type: 'combination', title: combo, subtitle: f.productType || '', url: featureUrl(f) });
+      }
+    }
+    // Individual feature name/description matches.
+    let fc = 0;
+    for (const f of feats) {
+      if (fc >= 15) break;
+      if (rx.test(f.name || '') || rx.test(f.description || '')) {
+        results.push({
+          type: 'feature', title: f.name || '(unnamed)',
+          subtitle: [f.productType, f.combination].filter(Boolean).join(' · '),
+          snippet: rx.test(f.description || '') ? snippet(f.description, rx) : '',
+          url: featureUrl(f),
+        });
+        fc++;
+      }
+    }
+
+    // Compatibility matrices (by name).
+    mats.forEach((m) => results.push({
+      type: 'compatibility', title: m.name,
+      url: '/?view=compatibility&matrix=' + encodeURIComponent(m.slug),
+    }));
+
+    // Cloud Info (by name).
+    infos.forEach((ci) => results.push({
+      type: 'cloudinfo', title: ci.name,
+      url: '/?view=cloudinfo&info=' + encodeURIComponent(ci.slug),
+    }));
+
+    // Documents (by name) — only those this user is allowed to open.
+    let dc = 0;
+    for (const d of docs) {
+      if (dc >= 10) break;
+      if (!canOpenDocument(access, folders, d)) continue; // skip restricted docs
+      results.push({ type: 'document', title: d.name, url: '/?view=documents&doc=' + encodeURIComponent(d.slug) });
+      dc++;
+    }
+
+    res.json({ query: raw, results: results.slice(0, 40) });
   } catch (err) { sendServerError(res, err); }
 });
 

@@ -25,7 +25,7 @@ export function installApiAuth() {
         const onAdmin = window.location.pathname.startsWith('/admin');
         const token = onAdmin
           ? localStorage.getItem('admin_token')
-          : sessionStorage.getItem('docs_token');
+          : localStorage.getItem('docs_token');
         if (token) {
           const headers = new Headers(
             (init && init.headers) || (input instanceof Request ? input.headers : undefined)

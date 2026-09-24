@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import NotificationBell from './NotificationBell';
+import GlobalSearch from './GlobalSearch';
 
 function getInitials(name, email) {
   if (name && name.trim()) {
@@ -60,6 +61,7 @@ function Header({ darkMode, onToggleDark, isAdmin, onLogout, user }) {
       )}
 
       <div className="header-right">
+        {!isAdmin && user && <GlobalSearch />}
         {!isAdmin && user && <NotificationBell />}
 
         <button className="dark-mode-btn" onClick={onToggleDark} title="Toggle dark mode">

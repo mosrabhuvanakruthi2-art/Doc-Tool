@@ -146,6 +146,7 @@ const PUBLIC_API = [
   /^\/api\/admin\/login$/,    // admin password login
   /^\/api\/client-errors$/,   // browser error reports may fire before login
   /^\/api\/internal\//,       // machine API — has its OWN auth (requireInternalKey: X-Internal-Key + origin/IP allowlist)
+  /^\/api\/doc-file\//,       // document file bytes — auth is the signed ?ft= token, re-checked + access re-verified in the handler
 ];
 app.use('/api', (req, res, next) => {
   const path = req.originalUrl.split('?')[0];
@@ -184,7 +185,39 @@ function sendServerError(res, err) {
 function decodeToken(req) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-  try { return jwt.verify(authHeader.split(' ')[1], JWT_SECRET); } catch { return null; }
+  try {
+    // Pin the algorithm so a token can never be presented under a different alg.
+    const payload = jwt.verify(authHeader.split(' ')[1], JWT_SECRET, { algorithms: ['HS256'] });
+    // A short-lived document-file token is NOT a session token: reject it here so a
+    // leaked file URL can never be replayed as a Bearer credential for the API.
+    if (payload && payload.typ === 'docfile') return null;
+    return payload;
+  } catch { return null; }
+}
+
+// ---- Short-lived, per-user signed URLs for document file bytes -------------
+// A document's file is streamed only through /api/doc-file/:id?ft=<token>. The
+// token is issued by the access-checked metadata endpoints and re-verified (and
+// the grant re-checked) on every stream, so a copied URL stops working the
+// moment access is revoked or the token expires.
+const DOC_FILE_TTL = process.env.DOC_FILE_TTL || '60m';
+function signDocFileToken(docId, email) {
+  return jwt.sign(
+    { typ: 'docfile', d: String(docId), u: String(email || '').toLowerCase() },
+    JWT_SECRET,
+    { expiresIn: DOC_FILE_TTL }
+  );
+}
+function verifyDocFileToken(token) {
+  try {
+    const p = jwt.verify(String(token || ''), JWT_SECRET, { algorithms: ['HS256'] });
+    return p && p.typ === 'docfile' ? p : null;
+  } catch { return null; }
+}
+// Build the client-facing file URL for a document the caller is allowed to open.
+function signedDocUrl(doc, email) {
+  if (!doc || !doc.fileUrl) return '';
+  return `/api/doc-file/${doc._id}?ft=${signDocFileToken(doc._id, email)}`;
 }
 
 function requireAuth(req, res, next) {
@@ -1126,9 +1159,11 @@ const docsDir = path.join(ASSETS_ROOT, 'documents');
 function resolveAssetFile(urlPath) {
   const rel = String(urlPath || '').replace(/^\//, '').replace(/^assets\//, '');
   if (!rel || rel.includes('\0')) return null;
-  const base = rel.startsWith('documents/') ? ASSETS_ROOT : assetsDir;
-  const resolved = path.resolve(base, rel);
-  if (resolved !== ASSETS_ROOT && !resolved.startsWith(ASSETS_ROOT + path.sep)) return null;
+  // Document files are access-controlled and served ONLY via /api/doc-file. They
+  // must never be reachable through the public asset resolver (e.g. image-proxy).
+  if (rel === 'documents' || rel.startsWith('documents/')) return null;
+  const resolved = path.resolve(assetsDir, rel);
+  if (resolved !== assetsDir && !resolved.startsWith(assetsDir + path.sep)) return null;
   return resolved;
 }
 const staticNoSniff = express.static(assetsDir, {
@@ -2857,6 +2892,19 @@ app.get('/api/revisions/:entityType/:entityId', requireAuth, async (req, res) =>
   try {
     const { entityType, entityId } = req.params;
     if (!mongoose.isValidObjectId(entityId)) return res.status(400).json({ error: 'Invalid id' });
+
+    // A document's revisions embed its content, so they answer to the same
+    // per-document access as the document itself (mirrors /api/history).
+    if (entityType === 'document') {
+      const liveDoc = await DocModel.findById(entityId).lean();
+      if (liveDoc) {
+        const access = await grantsFor(req);
+        if (!access.admin && !canOpenDocument(access, await liveFolders(), liveDoc)) {
+          return res.status(403).json({ error: 'You do not have access to this document' });
+        }
+      }
+    }
+
     const limit = Math.min(Number(req.query.limit) || 1, 20);
     const revisions = await Revision.find({ entityType, entityId })
       .sort({ changedAt: -1 })
@@ -3161,12 +3209,13 @@ app.get('/api/documents', async (req, res) => {
     res.json({
       items: items.map((i) => {
         const open = canOpenDocument(access, folders, i);
-        // A locked row keeps its name but not its download link.
+        // A locked row keeps its name but not its download link. An open row gets a
+        // short-lived signed URL, never the raw on-disk path.
         return {
           ...i,
           id: i._id.toString(),
           locked: !open,
-          fileUrl: open ? i.fileUrl : '',
+          fileUrl: open ? signedDocUrl(i, access.email) : '',
         };
       }),
     });
@@ -3286,7 +3335,8 @@ app.get('/api/documents/:slug', async (req, res) => {
         });
       }
     }
-    res.json({ item: { ...item, id: item._id.toString() } });
+    // Hand back a signed, short-lived file URL — never the raw /assets path.
+    res.json({ item: { ...item, id: item._id.toString(), fileUrl: signedDocUrl(item, access.email) } });
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -3351,59 +3401,78 @@ const INLINE_TYPES = {
   '.ps1': 'text/plain', '.html': 'text/plain', '.htm': 'text/plain',
 };
 
-// Inline view (?inline=1): stream a viewer-safe file for in-browser preview
-// instead of forcing a download. Restricted to the types above, inside docsDir;
-// everything else falls through to the attachment-only static mount below.
-app.get('/assets/documents/:filename', (req, res, next) => {
-  if (req.query.inline !== '1') return next();
-  const name = path.basename(String(req.params.filename || ''));
-  const ext = path.extname(name).toLowerCase();
-  const type = INLINE_TYPES[ext];
-  if (!type) return next();
-  const filePath = path.join(docsDir, name);
-  if (!filePath.startsWith(docsDir) || !fs.existsSync(filePath)) return next();
-
-  // nosniff + explicit type: the browser treats the file only as that type,
-  // never as an executable document in our origin. SVG is sandboxed so an
-  // embedded script cannot run when the URL is opened directly.
-  let csp = "default-src 'none'";
-  if (ext === '.pdf') csp = "default-src 'none'; object-src 'self'; plugin-types application/pdf";
-  else if (ext === '.svg') csp = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
-  res.set('X-Content-Type-Options', 'nosniff');
-  res.set('Content-Type', type);
-  res.set('Content-Disposition', 'inline');
-  res.set('Content-Security-Policy', csp);
-  res.set('Accept-Ranges', 'bytes');
-
-  // Range support so audio/video can seek and stream rather than fully buffer.
-  const stat = fs.statSync(filePath);
-  const range = req.headers.range;
-  if (range && /^bytes=\d*-\d*$/.test(range)) {
-    const [s, e] = range.replace('bytes=', '').split('-');
-    const start = s ? parseInt(s, 10) : 0;
-    const end = e ? parseInt(e, 10) : stat.size - 1;
-    if (start > end || end >= stat.size) {
-      res.set('Content-Range', `bytes */${stat.size}`);
-      return res.status(416).end();
+// Document file bytes are served ONLY here, never as a public static file. The
+// caller presents a signed ?ft= token (issued by the access-checked metadata
+// endpoints); we re-verify the token AND re-check the per-document grant against
+// the user's CURRENT database state on every request. Result: knowing the URL is
+// not enough — access must still be granted right now, and the token expires.
+// ?inline=1 streams viewer-safe types for in-browser preview; otherwise the file
+// is sent as a download. This route is PUBLIC_API-allowlisted because an <img>,
+// <iframe> or <video> cannot send an Authorization header — the token IS the auth.
+app.get('/api/doc-file/:id', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Not found' });
+    const payload = verifyDocFileToken(req.query.ft);
+    if (!payload || String(payload.d) !== String(req.params.id)) {
+      return res.status(403).json({ error: 'Not authorized' });
     }
-    res.status(206);
-    res.set('Content-Range', `bytes ${start}-${end}/${stat.size}`);
-    res.set('Content-Length', String(end - start + 1));
-    return fs.createReadStream(filePath, { start, end }).pipe(res);
-  }
-  res.set('Content-Length', String(stat.size));
-  fs.createReadStream(filePath).pipe(res);
-});
+    const doc = await DocModel.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
+      .select('name fileUrl folderId').lean();
+    if (!doc || !doc.fileUrl) return res.status(404).json({ error: 'Not found' });
 
-app.use('/assets/documents', express.static(docsDir, {
-  setHeaders: (res) => {
-    // Uploaded documents are downloads, never pages: force a save dialog and
-    // forbid content sniffing so nothing executes in our origin.
+    // Re-check the grant NOW, so a revoked/deactivated user cannot reuse a URL.
+    const access = await grantsForEmail(payload.u);
+    if (!access.admin && !canOpenDocument(access, await liveFolders(), doc)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    const name = path.basename(String(doc.fileUrl));
+    const filePath = path.join(docsDir, name);
+    if (!filePath.startsWith(docsDir) || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
+
+    const ext = path.extname(name).toLowerCase();
+    const inlineType = INLINE_TYPES[ext];
+    const wantInline = req.query.inline === '1' && !!inlineType;
+
     res.set('X-Content-Type-Options', 'nosniff');
-    res.set('Content-Disposition', 'attachment');
-    res.set('Content-Security-Policy', "default-src 'none'; sandbox");
-  },
-}));
+    if (wantInline) {
+      // Explicit inert type: the browser treats the file only as that type, never
+      // as executable HTML in our origin. SVG is sandboxed; PDF uses the viewer.
+      let csp = "default-src 'none'";
+      if (ext === '.pdf') csp = "default-src 'none'; object-src 'self'; plugin-types application/pdf";
+      else if (ext === '.svg') csp = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+      res.set('Content-Type', inlineType);
+      res.set('Content-Disposition', 'inline');
+      res.set('Content-Security-Policy', csp);
+    } else {
+      // Downloads: force a save dialog, generic type, nothing executes.
+      const safeName = String(doc.name || name).replace(/[\r\n"]/g, '');
+      res.set('Content-Type', 'application/octet-stream');
+      res.set('Content-Disposition', `attachment; filename="${safeName}${ext}"`);
+      res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    }
+    res.set('Accept-Ranges', 'bytes');
+
+    // Range support so audio/video can seek and stream rather than fully buffer.
+    const stat = fs.statSync(filePath);
+    const range = req.headers.range;
+    if (range && /^bytes=\d*-\d*$/.test(range)) {
+      const [s, e] = range.replace('bytes=', '').split('-');
+      const start = s ? parseInt(s, 10) : 0;
+      const end = e ? parseInt(e, 10) : stat.size - 1;
+      if (start > end || end >= stat.size) {
+        res.set('Content-Range', `bytes */${stat.size}`);
+        return res.status(416).end();
+      }
+      res.status(206);
+      res.set('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+      res.set('Content-Length', String(end - start + 1));
+      return fs.createReadStream(filePath, { start, end }).pipe(res);
+    }
+    res.set('Content-Length', String(stat.size));
+    fs.createReadStream(filePath).pipe(res);
+  } catch (err) { sendServerError(res, err); }
+});
 
 // Any file type may be uploaded. The on-disk name is random; the extension is
 // taken from the uploaded filename but hard-limited to a short alphanumeric
@@ -3484,7 +3553,8 @@ app.post('/api/documents/upload', uploadLimiter, requireAdmin, docUpload.single(
       summary: `Uploaded document file ${(req.file && req.file.originalname) || ''}`,
       details: { size: req.file && req.file.size, mimetype: req.file && req.file.mimetype },
     });
-    res.json({ success: true, item: { ...item.toObject(), id: item._id.toString() } });
+    const obj = item.toObject();
+    res.json({ success: true, item: { ...obj, id: item._id.toString(), fileUrl: signedDocUrl(obj, req.user && req.user.email) } });
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -3516,7 +3586,8 @@ app.post('/api/documents/:id/file', uploadLimiter, requireAdmin, docUpload.singl
       summary: `Replaced file for ${doc.name}`,
       details: { size: req.file.size, mimetype: req.file.mimetype },
     });
-    res.json({ success: true, item: { ...doc.toObject(), id: doc._id.toString() } });
+    const obj = doc.toObject();
+    res.json({ success: true, item: { ...obj, id: doc._id.toString(), fileUrl: signedDocUrl(obj, req.user && req.user.email) } });
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -3558,7 +3629,7 @@ app.put('/api/documents/:id', requireAdmin, async (req, res) => {
     if (update.folderId !== undefined && String(before && before.folderId || '') !== String(update.folderId || '')) {
       await auditDocumentMove(req, item, before && before.folderId, update.folderId);
     }
-    res.json({ success: true, item: { ...item, id: item._id.toString() } });
+    res.json({ success: true, item: { ...item, id: item._id.toString(), fileUrl: signedDocUrl(item, req.user && req.user.email) } });
   } catch (err) { sendServerError(res, err); }
 });
 
@@ -3625,24 +3696,33 @@ app.put('/api/documents/:id/folder', requireAdmin, async (req, res) => {
 
 async function grantsFor(req) {
   const decoded = decodeToken(req);
-  const empty = { admin: false, email: '', docGrants: new Set(), folderGrants: new Set() };
-  if (!decoded) return empty;
+  if (!decoded) return { admin: false, email: '', docGrants: new Set(), folderGrants: new Set() };
+  return grantsForEmail(decoded.email);
+}
 
-  const email = String(decoded.email || '').toLowerCase().trim();
+// Resolve a caller's document grants from their email. The database is the sole
+// authority: role, active state, and grants are all read fresh, so promotion,
+// demotion, deactivation or revocation take effect on the very next request.
+async function grantsForEmail(rawEmail) {
+  const email = String(rawEmail || '').toLowerCase().trim();
+  const empty = { admin: false, email: '', docGrants: new Set(), folderGrants: new Set() };
+  if (!email) return empty;
+
   const isEnvAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase().trim();
 
   let user = null;
   try {
     user = await User.findOne({ email }).select('role isActive documentAccess documentFolders').lean();
-  } catch (_) { /* fall back to the token below */ }
+  } catch (_) { /* fall closed below */ }
 
   // A deactivated account loses access at once rather than when its token runs out.
   if (user && user.isActive === false) return { ...empty, email };
 
-  // The database is the authority on the role, not the token: promoting or
-  // demoting somebody must take effect on their next request, not up to eight
-  // hours later when the token they are holding finally expires.
-  const admin = isEnvAdmin || (user ? user.role === 'admin' : decoded.role === 'admin');
+  // Fail closed: admin is granted ONLY to the env-admin (which has no DB row by
+  // design) or to a user whose DB row currently says role === 'admin'. A missing
+  // row or a DB error never confers admin from the token alone — so a deleted
+  // admin, or any request during a DB blip, cannot bypass per-document access.
+  const admin = isEnvAdmin || (user ? user.role === 'admin' : false);
 
   return {
     admin,

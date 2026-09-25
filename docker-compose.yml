@@ -1,55 +1,49 @@
 services:
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    # Not published: only the server container reaches it over the compose
-    # network. Add "127.0.0.1:27017:27017" here if you need mongosh from the host.
-    volumes:
-      - mongo_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-
   server:
     build:
       context: ./server
     restart: unless-stopped
-    # The same server/.env you use locally. Nothing is baked into the image.
     env_file:
       - ./server/.env
     environment:
-      # Fixed inside the container so nginx and the healthcheck always agree,
-      # regardless of the PORT you use for local dev. Overrides env_file.
       NODE_ENV: production
       PORT: "5000"
       ASSETS_DIR: /app/data
     volumes:
       - uploads:/app/data
-    depends_on:
-      mongo:
-        condition: service_healthy
+    # MongoDB runs on the host, not in a container: point MONGODB_URI in
+    # server/.env at mongodb://host.docker.internal:27017/<db>.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # Expose server to localhost only — nginx proxies /api/ here
+      - "127.0.0.1:5000:5000"
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:5000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 40s
+    networks:
+      - doc-tool-net
 
   client:
     build:
-      # Reads client/.env during the build (Vite inlines VITE_* into the bundle).
       context: ./client
     restart: unless-stopped
     ports:
-      # Bound to loopback: put the host's nginx/Caddy in front for TLS.
-      # Change to "80:80" to expose it directly.
-      - "127.0.0.1:${HTTP_PORT:-8080}:80"
+      - "127.0.0.1:8131:80"
     depends_on:
       - server
+    networks:
+      - doc-tool-net
+
+networks:
+  doc-tool-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.100.0.0/24
 
 volumes:
-  mongo_data:
   uploads:

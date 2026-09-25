@@ -1923,9 +1923,9 @@ app.delete('/api/features/:id', requireAdmin, async (req, res) => {
 // lists product types with their combinations, and returns a Word document of the
 // feature table (name + description only) for one of them.
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
-// While true the endpoints answer without a key, so a URL can be opened straight in
-// a browser. Set INTERNAL_API_PUBLIC=false to require the key again.
-const INTERNAL_API_PUBLIC = String(process.env.INTERNAL_API_PUBLIC || '').toLowerCase() === 'true';
+// There is no public/anonymous mode: the internal API ALWAYS requires the shared
+// key (plus, when configured, an allowed origin or caller IP). A caller is trusted
+// only when it presents the key from an allowed origin/address.
 
 function safeEquals(a, b) {
   // Hash both sides first: timingSafeEqual needs equal lengths, and comparing
@@ -1975,7 +1975,6 @@ function requireInternalKey(req, res, next) {
     return res.status(403).json({ error: 'Caller address not allowed', seenIp: callerIp(req) });
   }
 
-  if (INTERNAL_API_PUBLIC) return next();
   if (!INTERNAL_API_KEY) {
     return res.status(503).json({ error: 'Internal API is not configured on this server' });
   }

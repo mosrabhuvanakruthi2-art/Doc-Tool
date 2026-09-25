@@ -2467,8 +2467,10 @@ app.get('/api/notifications', async (req, res) => {
     const revisions = [...merged.values()].sort((a, b) => new Date(b.changedAt) - new Date(a.changedAt));
 
     // A document this reader has not been granted must not announce itself, so
-    // notifications answer to the same per-document rule as the pages.
-    const notifyAccess = await grantsFor(req);
+    // notifications answer to the same per-document rule as the pages. The user
+    // row was already read above, so the grants come from it rather than a second
+    // lookup of the same row.
+    const notifyAccess = grantsFromUser(account.email, account.dbUser);
     let readableDocIds = null; // null = no restriction (admins)
     if (!notifyAccess.admin) {
       const docIds = [...new Set(revisions.filter(r => r.entityType === 'document').map(r => String(r.entityId)))];
@@ -2496,20 +2498,19 @@ app.get('/api/notifications', async (req, res) => {
       return true;
     });
 
-    // Feature rows carry no location of their own, so fetch the page each belongs to.
+    // Feature rows carry no location of their own, so fetch the page each belongs to,
+    // together with the slugs for the pages a notification can link to.
     const featureIds = visible.filter(r => r.entityType === 'feature').map(r => r.entityId);
-    const features = featureIds.length
-      ? await Feature.find({ _id: { $in: featureIds } }).select('productType combination scope').lean()
-      : [];
-    const featureById = new Map(features.map(f => [String(f._id), f]));
-
-    // Slugs for the pages a notification can link to.
     const idsOf = (type) => visible.filter(r => r.entityType === type).map(r => r.entityId);
-    const [matrices, infos, documents] = await Promise.all([
+    const [features, matrices, infos, documents] = await Promise.all([
+      featureIds.length
+        ? Feature.find({ _id: { $in: featureIds } }).select('productType combination scope').lean()
+        : [],
       CompatibilityMatrix.find({ _id: { $in: idsOf('compatibility') } }).select('slug name').lean(),
       CloudInfo.find({ _id: { $in: idsOf('cloudInfo') } }).select('slug name').lean(),
       DocModel.find({ _id: { $in: idsOf('document') } }).select('slug name').lean(),
     ]);
+    const featureById = new Map(features.map(f => [String(f._id), f]));
     const slugById = new Map([...matrices, ...infos, ...documents].map(d => [String(d._id), d.slug]));
 
     // Group so ten edits to one page read as one notification, not ten.
@@ -3711,15 +3712,22 @@ async function grantsFor(req) {
 // demotion, deactivation or revocation take effect on the very next request.
 async function grantsForEmail(rawEmail) {
   const email = String(rawEmail || '').toLowerCase().trim();
-  const empty = { admin: false, email: '', docGrants: new Set(), folderGrants: new Set() };
-  if (!email) return empty;
-
-  const isEnvAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase().trim();
+  if (!email) return grantsFromUser('', null);
 
   let user = null;
   try {
     user = await User.findOne({ email }).select('role isActive documentAccess documentFolders').lean();
   } catch (_) { /* fall closed below */ }
+  return grantsFromUser(email, user);
+}
+
+// The decision half of grantsForEmail, for a caller whose user row (or null) was
+// already read in this request. `email` must already be lower-cased and trimmed.
+function grantsFromUser(email, user) {
+  const empty = { admin: false, email: '', docGrants: new Set(), folderGrants: new Set() };
+  if (!email) return empty;
+
+  const isEnvAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase().trim();
 
   // A deactivated account loses access at once rather than when its token runs out.
   if (user && user.isActive === false) return { ...empty, email };

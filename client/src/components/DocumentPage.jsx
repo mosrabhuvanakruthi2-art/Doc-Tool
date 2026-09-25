@@ -5,6 +5,7 @@ import UpdatedOn from './UpdatedOn';
 import FilePreview from './FilePreview';
 import SpreadsheetEditor from './SpreadsheetEditor';
 import { reportDownload } from '../reportDownload';
+import { cleanHtml } from '../sanitize';
 
 const SHEET_EXTS = ['xlsx', 'xls', 'xlsm', 'csv', 'tsv'];
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } from 'docx';
@@ -267,7 +268,7 @@ function DocumentPage({ slug }) {
       ) : showFile ? (
         <FilePreview src={inlineUrl} ext={ftype} name={item.name} downloadUrl={item.fileUrl} hideBar />
       ) : (
-        <div className="cloud-info-page-content" dangerouslySetInnerHTML={{ __html: item.content || '<em>No content available.</em>' }} />
+        <div className="cloud-info-page-content" dangerouslySetInnerHTML={{ __html: item.content ? cleanHtml(item.content) : '<em>No content available.</em>' }} />
       )}
     </div>
   );

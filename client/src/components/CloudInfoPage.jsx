@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
 import { reportDownload } from '../reportDownload';
+import { cleanHtml } from '../sanitize';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } from 'docx';
 import { saveAs } from 'file-saver';
 
@@ -329,7 +330,7 @@ function CloudInfoPage({ slug }) {
       </div>
       <div
         className="cloud-info-page-content"
-        dangerouslySetInnerHTML={{ __html: item.content || '<em>No content available.</em>' }}
+        dangerouslySetInnerHTML={{ __html: item.content ? cleanHtml(item.content) : '<em>No content available.</em>' }}
       />
     </div>
   );

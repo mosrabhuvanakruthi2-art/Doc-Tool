@@ -111,11 +111,6 @@ export default function SalesAdmin() {
 
   return (
     <div className="sales-admin">
-      <div className="sales-admin-head">
-        <h2 className="sales-admin-title">Sales Page Visibility</h2>
-        <p className="sales-admin-sub">Turn a feature on to show it on the <strong>/sales</strong> page. Everything is off by default.</p>
-      </div>
-
       {/* Product-type tabs */}
       <div className="sales-tabs sales-admin-tabs">
         {productTypes.map((pt) => (
@@ -158,24 +153,22 @@ export default function SalesAdmin() {
                 </div>
               </div>
 
-              <div className="sales-toggle">
-                <button className={`sales-toggle-btn is-good${view === 'migrates' ? ' active' : ''}`} onClick={() => { setView('migrates'); setQuery(''); }}>
-                  What Migrates <span className="sales-toggle-count">{migrates.filter((f) => f.showInSales).length}/{migrates.length}</span>
-                </button>
-                <button className={`sales-toggle-btn is-warn${view === 'limits' ? ' active' : ''}`} onClick={() => { setView('limits'); setQuery(''); }}>
-                  Limitations <span className="sales-toggle-count">{limits.filter((f) => f.showInSales).length}/{limits.length}</span>
-                </button>
-              </div>
-
-              {base.length > 0 && (
-                <div className="sales-admin-bulk">
-                  <span className="sales-admin-bulk-label">{shownCount} of {base.length} shown on sales</span>
+              <div className="sales-admin-controls">
+                <div className="sales-toggle">
+                  <button className={`sales-toggle-btn is-good${view === 'migrates' ? ' active' : ''}`} onClick={() => { setView('migrates'); setQuery(''); }}>
+                    What Migrates <span className="sales-toggle-count">{migrates.filter((f) => f.showInSales).length}/{migrates.length}</span>
+                  </button>
+                  <button className={`sales-toggle-btn is-warn${view === 'limits' ? ' active' : ''}`} onClick={() => { setView('limits'); setQuery(''); }}>
+                    Limitations <span className="sales-toggle-count">{limits.filter((f) => f.showInSales).length}/{limits.length}</span>
+                  </button>
+                </div>
+                {base.length > 0 && (
                   <div className="sales-admin-bulk-actions">
                     <button className="sales-admin-bulk-btn" disabled={allShown} onClick={() => persist(base, true)}>Enable all</button>
                     <button className="sales-admin-bulk-btn" disabled={shownCount === 0} onClick={() => persist(base, false)}>Disable all</button>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
 
               {groups.length === 0 ? (
                 <div className="sales-empty-main">{q ? `No features match “${query.trim()}”.` : 'Nothing here.'}</div>

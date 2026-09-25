@@ -1,9 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import CfLoader from './CfLoader';
 import DocumentAccessRequest from './DocumentAccessRequest';
 import UpdatedOn from './UpdatedOn';
 import FilePreview from './FilePreview';
-import SpreadsheetEditor from './SpreadsheetEditor';
+// Only spreadsheet files need the grid (and SheetJS), so it loads with them. The
+// fallback is the editor's own loading line, so nothing new appears on screen.
+const SpreadsheetEditor = lazy(() => import('./SpreadsheetEditor'));
+const SHEET_LOADING = <p style={{ padding: 20 }}>Loading spreadsheet…</p>;
 import { reportDownload } from '../reportDownload';
 import { cleanHtml } from '../sanitize';
 
@@ -270,7 +273,9 @@ function DocumentPage({ slug }) {
       </div>
       {showFile && SHEET_EXTS.includes(ftype) ? (
         <div className="doc-sheet-reader">
-          <SpreadsheetEditor url={item.fileUrl} ext={ftype} readOnly />
+          <Suspense fallback={SHEET_LOADING}>
+            <SpreadsheetEditor url={item.fileUrl} ext={ftype} readOnly />
+          </Suspense>
         </div>
       ) : showFile ? (
         <FilePreview src={inlineUrl} ext={ftype} name={item.name} downloadUrl={item.fileUrl} hideBar />

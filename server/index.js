@@ -1694,13 +1694,15 @@ app.get('/api/features', async (req, res) => {
       filter.family = tag;
     }
 
-    const features = await Feature.find(filter).sort({ order: 1, createdAt: 1 }).lean();
-
     const tagFilter = { isDeleted: { $ne: true } };
     if (pt) tagFilter.productType = pt;
     if (scope) tagFilter.scope = scope;
     if (combination) tagFilter.combination = combination;
-    const allFeatures = await Feature.find(tagFilter).select('family name updatedAt createdAt').lean();
+    // Independent reads, so they run concurrently rather than one round-trip after the other.
+    const [features, allFeatures] = await Promise.all([
+      Feature.find(filter).sort({ order: 1, createdAt: 1 }).lean(),
+      Feature.find(tagFilter).select('family name updatedAt createdAt').lean(),
+    ]);
     const allTags = new Set();
     // Most recent activity across the whole scope — built from tagFilter, which ignores
     // search/tag, so the date stays stable while the user filters. Both stamps are sent so

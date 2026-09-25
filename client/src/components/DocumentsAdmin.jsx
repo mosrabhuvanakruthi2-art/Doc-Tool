@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 // mammoth (DOCX -> HTML) is only needed when a Word file is imported, so it loads then.
 const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
 import FilePreview, { previewKindOf, TEXT_EXTS } from './FilePreview';
-import SpreadsheetEditor from './SpreadsheetEditor';
+// The grid editor (and SheetJS) loads only when a spreadsheet is opened; the fallback is the
+// editor's own loading line, so nothing new appears on screen. The ref passes through lazy().
+const SpreadsheetEditor = lazy(() => import('./SpreadsheetEditor'));
+const SHEET_LOADING = <p style={{ padding: 20 }}>Loading spreadsheet…</p>;
 
 // Spreadsheets open in the grid editor (edit cells, save back to the file).
 const SHEET_EXTS = ['xlsx', 'xls', 'xlsm', 'csv', 'tsv'];
@@ -1362,13 +1365,15 @@ function DocumentsAdmin({ onChanged }) {
           ) : (sheetEdit || isSheetDoc) ? (
             <>
               {isEditing && <div className="doc-staged-preview-hint">Edit the cells, then click <strong>Save</strong>.</div>}
-              <SpreadsheetEditor
-                ref={sheetRef}
-                file={sheetEdit ? sheetEdit.file : undefined}
-                url={sheetEdit ? sheetEdit.url : fileUrl}
-                ext={sheetEdit ? sheetEdit.ext : fileType}
-                readOnly={!isEditing}
-              />
+              <Suspense fallback={SHEET_LOADING}>
+                <SpreadsheetEditor
+                  ref={sheetRef}
+                  file={sheetEdit ? sheetEdit.file : undefined}
+                  url={sheetEdit ? sheetEdit.url : fileUrl}
+                  ext={sheetEdit ? sheetEdit.ext : fileType}
+                  readOnly={!isEditing}
+                />
+              </Suspense>
             </>
           ) : pendingPreview ? (
             <>

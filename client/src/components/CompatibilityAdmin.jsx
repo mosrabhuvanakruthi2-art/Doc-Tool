@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import * as XLSX from 'xlsx';
+// SheetJS is only needed when an Excel file is imported, so it loads then.
+const loadXlsx = () => import('xlsx');
 import CustomSelect from './CustomSelect';
 import { showToast } from './Toast';
 
@@ -195,8 +196,9 @@ function CompatibilityAdmin({ onChanged }) {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
+        const XLSX = await loadXlsx();
         const data = new Uint8Array(evt.target.result);
         const workbook = XLSX.read(data, { type: 'array' });
         const sheetName = workbook.SheetNames[0];

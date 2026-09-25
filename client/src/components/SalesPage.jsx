@@ -153,7 +153,7 @@ export default function SalesPage() {
                   <input
                     type="text"
                     value={query}
-                    placeholder="Search this combination…"
+                    placeholder="Search features…"
                     onChange={(e) => setQuery(e.target.value)}
                     aria-label="Search this combination"
                   />

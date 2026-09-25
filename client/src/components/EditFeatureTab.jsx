@@ -3,6 +3,7 @@ import FeatureCard from './FeatureCard';
 import { useProductConfig } from '../ProductConfigContext';
 import CustomSelect from './CustomSelect';
 import { showToast } from './Toast';
+import CfLoader from './CfLoader';
 
 function getEditCacheKey(productType, scope, combination) {
   return `edit_cache_${productType}_${scope}_${combination}`;
@@ -820,7 +821,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
           )}
 
           {loading ? (
-            <div className="saved-loading">Loading features...</div>
+            <CfLoader inline />
           ) : features.length === 0 ? (
             <div className="saved-empty">
               No features found for {scope === 'inscope' ? 'In Scope' : 'Out of Scope'} / {productType}

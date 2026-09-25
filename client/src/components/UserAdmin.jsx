@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { showToast } from './Toast';
+import CfLoader from './CfLoader';
 
 const PERM_KEYS = [
   { key: 'productTypes', label: 'Product Types' },
@@ -427,7 +428,7 @@ function UserAdmin() {
           <h3>User Management</h3>
           <button className="btn-save" onClick={() => { resetForm(); setMode('create'); }}>+ New User</button>
         </div>
-        {loading ? <p>Loading users...</p> : shownUsers.length === 0 ? (
+        {loading ? <CfLoader inline /> : shownUsers.length === 0 ? (
           <p className="user-admin-empty">
             {query ? `No users match "${search.trim()}".` : 'No users yet. Click "+ New User" to create one.'}
           </p>

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 // mammoth (DOCX -> HTML) is only needed when a Word file is imported, so it loads then.
 const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
+import CfLoader from './CfLoader';
 import FilePreview, { previewKindOf, TEXT_EXTS } from './FilePreview';
 // The grid editor (and SheetJS) loads only when a spreadsheet is opened; the fallback is the
 // editor's own loading line, so nothing new appears on screen. The ref passes through lazy().
@@ -41,6 +42,8 @@ const CHEVRON = (expanded) => (
 function DocumentsAdmin({ onChanged }) {
   const [items, setItems] = useState([]);
   const [folders, setFolders] = useState([]);
+  // True until the first documents + folders fetch settles, so the empty state never flashes.
+  const [listLoading, setListLoading] = useState(true);
   const [mode, setMode] = useState('list');
   const [selectedId, setSelectedId] = useState('');
   const [name, setName] = useState('');
@@ -117,7 +120,10 @@ function DocumentsAdmin({ onChanged }) {
     } catch (_) {}
   };
 
-  const fetchAll = async () => { await Promise.all([fetchItems(), fetchFolders()]); };
+  const fetchAll = async () => {
+    await Promise.all([fetchItems(), fetchFolders()]);
+    setListLoading(false);
+  };
 
   const notifyChanged = () => { if (onChanged) onChanged(); };
 
@@ -1170,7 +1176,9 @@ function DocumentsAdmin({ onChanged }) {
           </div>
         </div>
 
-        {empty ? (
+        {listLoading && empty ? (
+          <CfLoader inline />
+        ) : empty ? (
           <p className="cloud-info-empty">No folders yet. Use "+ New Folder" to build a structure, then add documents inside a folder with "+ Document".</p>
         ) : (
           <>
@@ -1327,7 +1335,7 @@ function DocumentsAdmin({ onChanged }) {
           </>
         )}
       </div>
-      {loading && <p style={{ padding: '20px' }}>Loading...</p>}
+      {loading && <CfLoader inline />}
       {!loading && (
         <div className="cloud-info-scroll-area">
           {pendingBatch ? (

@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from 'react';
 import { showToast } from './Toast';
+import CfLoader from './CfLoader';
 
 function TrashAdmin({ onChanged }) {
   const [trash, setTrash] = useState({ features: [], productConfigs: [], matrices: [], cloudInfos: [], combinations: [], documents: [], documentFolders: [] });
@@ -119,7 +120,7 @@ function TrashAdmin({ onChanged }) {
       )}
 
       {loading ? (
-        <p>Loading trash...</p>
+        <CfLoader inline />
       ) : totalItems === 0 ? (
         <div className="trash-empty">
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 // mammoth (DOCX -> HTML) is only needed when a Word file is imported, so it loads then.
 const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
+import CfLoader from './CfLoader';
 
 const MAX_CLOUD_INFO_PAGES = 50;
 const MAX_CLOUD_INFO_IMAGES = 200;
@@ -16,6 +17,8 @@ function getCloudInfoStatsFromHtml(html = '') {
 
 function CloudInfoAdmin({ onChanged }) {
   const [items, setItems] = useState([]);
+  // True until the first list fetch settles, so the empty state never flashes.
+  const [listLoading, setListLoading] = useState(true);
   const [mode, setMode] = useState('list');
   const [selectedId, setSelectedId] = useState('');
   const [name, setName] = useState('');
@@ -48,7 +51,10 @@ function CloudInfoAdmin({ onChanged }) {
       const res = await fetch('/api/cloud-info');
       const data = await res.json();
       setItems(data.items || []);
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      setListLoading(false);
+    }
   };
 
   const resetForm = () => {
@@ -267,7 +273,9 @@ function CloudInfoAdmin({ onChanged }) {
           <button className="btn-create-new" onClick={handleNew}>+ New Cloud Info</button>
         </div>
 
-        {items.length === 0 ? (
+        {listLoading && items.length === 0 ? (
+          <CfLoader inline />
+        ) : items.length === 0 ? (
           <p className="cloud-info-empty">No Cloud Info entries yet. Click "New Cloud Info" to create one.</p>
         ) : (
           <>
@@ -400,7 +408,7 @@ function CloudInfoAdmin({ onChanged }) {
         )}
       </div>
 
-      {loading && <p style={{ padding: '20px' }}>Loading...</p>}
+      {loading && <CfLoader inline />}
 
       {!loading && (
         <div className="cloud-info-scroll-area">

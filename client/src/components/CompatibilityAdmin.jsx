@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 const loadXlsx = () => import('xlsx');
 import CustomSelect from './CustomSelect';
 import { showToast } from './Toast';
+import CfLoader from './CfLoader';
 
 const COMPAT_MATRICES_CHANGED = 'docproject:compat-matrices-changed';
 
@@ -12,6 +13,8 @@ function notifyCompatMatricesChanged() {
 
 function CompatibilityAdmin({ onChanged }) {
   const [matrices, setMatrices] = useState([]);
+  // True until the first list fetch settles, so an empty picker never flashes.
+  const [listLoading, setListLoading] = useState(true);
   const [selectedId, setSelectedId] = useState('');
   const [mode, setMode] = useState('select');
   const [loading, setLoading] = useState(false);
@@ -49,7 +52,10 @@ function CompatibilityAdmin({ onChanged }) {
       const res = await fetch('/api/compatibility');
       const data = await res.json();
       setMatrices(data.matrices || []);
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      setListLoading(false);
+    }
   };
 
   const loadMatrix = async (id) => {
@@ -362,17 +368,21 @@ function CompatibilityAdmin({ onChanged }) {
           <div className="form-actions" style={{ marginBottom: 16 }}>
             <button className="btn-save" onClick={startNew}>+ Create New Matrix</button>
           </div>
-          <div className="form-section">
-            <div className="form-group">
-              <label>Select an existing matrix to edit</label>
-              <CustomSelect
-                value=""
-                onChange={(e) => { if (e.target.value) loadMatrix(e.target.value); }}
-                options={matrices.map(m => ({ value: m._id, label: m.name }))}
-                placeholder="-- Select Matrix --"
-              />
+          {listLoading && matrices.length === 0 ? (
+            <CfLoader inline />
+          ) : (
+            <div className="form-section">
+              <div className="form-group">
+                <label>Select an existing matrix to edit</label>
+                <CustomSelect
+                  value=""
+                  onChange={(e) => { if (e.target.value) loadMatrix(e.target.value); }}
+                  options={matrices.map(m => ({ value: m._id, label: m.name }))}
+                  placeholder="-- Select Matrix --"
+                />
+              </div>
             </div>
-          </div>
+          )}
           {matrices.length > 1 && (
             <div className="reorder-toggle-section">
               <button className="btn-reorder-toggle" onClick={() => setShowReorder(prev => !prev)}>

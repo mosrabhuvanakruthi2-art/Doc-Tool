@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import mammoth from 'mammoth';
+// mammoth (DOCX -> HTML) is only needed when a Word file is imported, so it loads then.
+const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
 
 const MAX_CLOUD_INFO_PAGES = 50;
@@ -91,6 +92,7 @@ function CloudInfoAdmin({ onChanged }) {
 
     try {
       const arrayBuffer = await file.arrayBuffer();
+      const mammoth = await loadMammoth();
       const options = {
         convertImage: mammoth.images.imgElement(function(image) {
           return image.read('base64').then(function(imageBuffer) {

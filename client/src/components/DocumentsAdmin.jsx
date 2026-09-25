@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import mammoth from 'mammoth';
+// mammoth (DOCX -> HTML) is only needed when a Word file is imported, so it loads then.
+const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
 import FilePreview, { previewKindOf, TEXT_EXTS } from './FilePreview';
 import SpreadsheetEditor from './SpreadsheetEditor';
@@ -573,6 +574,7 @@ function DocumentsAdmin({ onChanged }) {
       try {
         clearStaged();
         const arrayBuffer = await file.arrayBuffer();
+        const mammoth = await loadMammoth();
         const options = {
           convertImage: mammoth.images.imgElement(function (image) {
             return image.read('base64').then(function (imageBuffer) {
@@ -647,6 +649,7 @@ function DocumentsAdmin({ onChanged }) {
     const baseName = (nameOverride && nameOverride.trim()) || file.name.replace(/\.[^.]+$/, '');
     if (ext === 'docx') {
       const arrayBuffer = await file.arrayBuffer();
+      const mammoth = await loadMammoth();
       const result = await mammoth.convertToHtml({ arrayBuffer }, {
         convertImage: mammoth.images.imgElement((image) =>
           image.read('base64').then((b) => ({ src: 'data:' + image.contentType + ';base64,' + b }))),

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useProductConfig } from '../ProductConfigContext';
 import { useAuth } from '../AuthContext';
+import { getJsonShared } from '../sharedGet';
 
 const PRODUCT_ICONS = {
   Message: (
@@ -120,14 +121,12 @@ function Sidebar() {
 
   useEffect(() => {
     const loadCompat = () => {
-      fetch('/api/compatibility')
-        .then((res) => res.json())
+      getJsonShared('/api/compatibility')
         .then((data) => setCompatMatrices(data.matrices || []))
         .catch(() => {});
     };
     const loadCloud = () => {
-      fetch('/api/cloud-info')
-        .then((res) => res.json())
+      getJsonShared('/api/cloud-info')
         .then((data) => setCloudInfoItems(data.items || []))
         .catch(() => {});
     };

@@ -9,6 +9,7 @@ import DocumentView from './DocumentView';
 import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
 import { reportDownload } from '../reportDownload';
+import { getJsonShared } from '../sharedGet';
 
 function WelcomePage() {
   const [stats, setStats] = useState({ productTypes: 0, combinations: 0, compatibility: 0, cloudInfo: 0 });
@@ -19,8 +20,8 @@ function WelcomePage() {
       try {
         const [configRes, compatRes, cloudRes] = await Promise.all([
           fetch('/api/product-config').then(r => r.json()),
-          fetch('/api/compatibility').then(r => r.json()),
-          fetch('/api/cloud-info').then(r => r.json()),
+          getJsonShared('/api/compatibility'),
+          getJsonShared('/api/cloud-info'),
         ]);
         const configs = configRes.configs || [];
         setStats({

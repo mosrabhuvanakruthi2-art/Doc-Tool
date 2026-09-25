@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { useProductConfig } from '../ProductConfigContext';
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, BorderStyle as DocBorderStyle } from 'docx';
-import { saveAs } from 'file-saver';
 import SearchBar from './SearchBar';
 import FilterTags from './FilterTags';
 import DocumentView from './DocumentView';
@@ -276,6 +274,12 @@ function FeatureTable() {
     if (features.length === 0) return;
     setDownloading('doc');
     try {
+      // The Word export library is only needed here, so it loads on the first
+      // download instead of with the page (the button already reads "Downloading...").
+      const [{ Document, Packer, Paragraph, TextRun, ImageRun, BorderStyle: DocBorderStyle }, { saveAs }] = await Promise.all([
+        import('docx'),
+        import('file-saver'),
+      ]);
       const grouped = groupByFamily(features);
       const scopeLabel = section === 'inscope' ? 'In Scope' : 'Out of Scope';
       const children = [];

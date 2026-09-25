@@ -8,8 +8,14 @@ import { reportDownload } from '../reportDownload';
 import { cleanHtml } from '../sanitize';
 
 const SHEET_EXTS = ['xlsx', 'xls', 'xlsm', 'csv', 'tsv'];
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } from 'docx';
-import { saveAs } from 'file-saver';
+// The Word export library loads on the first export instead of with the page;
+// loadExportLibs() fills these bindings before any of the helpers below run.
+let Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle, saveAs;
+async function loadExportLibs() {
+  const [docx, fileSaver] = await Promise.all([import('docx'), import('file-saver')]);
+  ({ Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } = docx);
+  ({ saveAs } = fileSaver);
+}
 
 const IMG_MAX_WIDTH = 580;
 const IMG_MAX_HEIGHT = 700;
@@ -226,6 +232,7 @@ function DocumentPage({ slug }) {
     if (exporting) return;
     setExporting(true);
     try {
+      await loadExportLibs();
       const title = item.name || 'Document';
       const docChildren = [
         new Paragraph({ text: title, heading: HeadingLevel.TITLE, spacing: { after: 200 } }),

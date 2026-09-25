@@ -2,9 +2,15 @@ import { useState, useEffect } from 'react';
 import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
 import { reportDownload } from '../reportDownload';
-import * as XLSX from 'xlsx';
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } from 'docx';
-import { saveAs } from 'file-saver';
+// The Excel and Word export libraries load on the first export instead of with
+// the page; the loaders below fill these bindings before a download uses them.
+let XLSX;
+let Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle, saveAs;
+async function loadDocxLibs() {
+  const [docx, fileSaver] = await Promise.all([import('docx'), import('file-saver')]);
+  ({ Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } = docx);
+  ({ saveAs } = fileSaver);
+}
 
 function getDateStr() {
   const now = new Date();
@@ -40,8 +46,16 @@ function CompatibilityTable({ matrixSlug }) {
       .finally(() => setLoading(false));
   }, [matrixSlug]);
 
-  const downloadExcel = () => {
+  const downloadExcel = async () => {
     if (!matrix) return;
+    // Loaded before the state change so the export below still runs as one
+    // synchronous block, exactly as it did when the library was bundled in.
+    try {
+      XLSX = XLSX || await import('xlsx');
+    } catch (err) {
+      console.error('Excel download error:', err);
+      return;
+    }
     setDownloading('excel');
     try {
       const { name, columns, rows, notes } = matrix;
@@ -85,6 +99,7 @@ function CompatibilityTable({ matrixSlug }) {
     if (!matrix) return;
     setDownloading('docx');
     try {
+      await loadDocxLibs();
       const { name, columns, rows, notes } = matrix;
       const borderStyle = { style: BorderStyle.SINGLE, size: 1, color: '999999' };
       const cellBorders = { top: borderStyle, bottom: borderStyle, left: borderStyle, right: borderStyle };

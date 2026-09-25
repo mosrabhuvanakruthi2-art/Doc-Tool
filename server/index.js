@@ -1958,21 +1958,19 @@ function callerIp(req) {
 function requireInternalKey(req, res, next) {
   const origin = String(req.headers.origin || '').replace(/\/$/, '').toLowerCase();
 
-  // A browser call from an origin that is not on the list gets nothing, key or not.
-  if (origin && INTERNAL_API_ALLOWED_ORIGINS.length
-    && !INTERNAL_API_ALLOWED_ORIGINS.includes(origin)) {
-    return res.status(403).json({ error: 'Origin not allowed' });
+  // FAIL CLOSED: the key alone is never enough. The caller must ALSO be on an
+  // allow-list — an allowed Origin (browser calls) OR an allowed caller IP
+  // (server-to-server). If neither allow-list is configured, nothing is trusted.
+  const originAllowed = !!origin && INTERNAL_API_ALLOWED_ORIGINS.includes(origin);
+  const ipAllowed = INTERNAL_API_ALLOWED_IPS.includes(callerIp(req));
+  if (!originAllowed && !ipAllowed) {
+    return res.status(403).json({ error: 'Caller not allowed' });
   }
-  // Echo the specific origin so the browser accepts the response. The app-wide
-  // cors() sets a wildcard, which is too loose for this endpoint.
-  if (origin && INTERNAL_API_ALLOWED_ORIGINS.includes(origin)) {
+  // Echo the specific allowed origin so the browser accepts the response. The
+  // app-wide cors() sets a wildcard, which is too loose for this endpoint.
+  if (originAllowed) {
     res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
     res.setHeader('Vary', 'Origin');
-  }
-
-  // No Origin means a server-to-server caller: check the address instead.
-  if (!origin && INTERNAL_API_ALLOWED_IPS.length && !INTERNAL_API_ALLOWED_IPS.includes(callerIp(req))) {
-    return res.status(403).json({ error: 'Caller address not allowed', seenIp: callerIp(req) });
   }
 
   if (!INTERNAL_API_KEY) {

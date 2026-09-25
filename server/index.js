@@ -1627,6 +1627,7 @@ function mapFeature(f) {
     family: f.family,
     screenshots: f.screenshots,
     order: f.order || 0,
+    showInSales: !!f.showInSales,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
   };
@@ -1644,6 +1645,10 @@ app.get('/api/features', async (req, res) => {
     if (pt) filter.productType = pt;
     if (scope) filter.scope = scope;
     if (combination) filter.combination = combination;
+    // Sales page asks for sales=1 so it only ever receives features an admin
+    // has explicitly turned on for the sales view.
+    const salesParam = qStr(req.query.sales);
+    if (salesParam === '1' || salesParam === 'true') filter.showInSales = true;
 
     if (search) {
       const regex = new RegExp(escapeRegex(search), 'i');

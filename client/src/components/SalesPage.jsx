@@ -66,7 +66,7 @@ export default function SalesPage() {
     if (!product) return;
     let cancelled = false;
     setLoading(true);
-    fetch('/api/features?productType=' + encodeURIComponent(product))
+    fetch('/api/features?sales=1&productType=' + encodeURIComponent(product))
       .then((r) => r.json())
       .then((d) => { if (!cancelled) setFeatures(d.features || []); })
       .catch(() => { if (!cancelled) setFeatures([]); })
@@ -79,14 +79,17 @@ export default function SalesPage() {
     const ordered = combinationsByProduct[product] || [];
     const fromFeats = [...new Set(features.map((f) => f.combination).filter(Boolean))];
     const names = [...new Set([...ordered, ...fromFeats])];
-    return names.map((name) => {
-      const fs = features.filter((f) => f.combination === name);
-      return {
-        name,
-        migrates: fs.filter((f) => f.scope === 'inscope').length,
-        limits: fs.filter((f) => f.scope === 'outscope').length,
-      };
-    });
+    return names
+      .map((name) => {
+        const fs = features.filter((f) => f.combination === name);
+        return {
+          name,
+          migrates: fs.filter((f) => f.scope === 'inscope').length,
+          limits: fs.filter((f) => f.scope === 'outscope').length,
+        };
+      })
+      // Only list combinations that have at least one feature enabled for sales.
+      .filter((c) => c.migrates + c.limits > 0);
   }, [product, features, combinationsByProduct]);
 
   const combo = searchParams.get('combination') || (combos[0] && combos[0].name) || '';

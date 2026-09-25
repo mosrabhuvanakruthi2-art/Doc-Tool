@@ -2438,6 +2438,25 @@ async function resolveNotificationUser(req) {
   };
 }
 
+// Only the revision fields the notification list reads. A change's added/removed
+// lists matter only for product-type combinations; on content fields they hold the
+// HTML diff (megabytes across the log) that the list never looks at.
+const NOTIFY_REVISION_FIELDS = {
+  entityType: 1, entityId: 1, entityName: 1, action: 1, changedAt: 1,
+  changes: {
+    $map: {
+      input: { $ifNull: ['$changes', []] },
+      as: 'c',
+      in: {
+        field: '$$c.field',
+        label: '$$c.label',
+        added: { $cond: [{ $eq: ['$$c.field', 'combinations'] }, '$$c.added', '$$REMOVE'] },
+        removed: { $cond: [{ $eq: ['$$c.field', 'combinations'] }, '$$c.removed', '$$REMOVE'] },
+      },
+    },
+  },
+};
+
 // Unread until the change is newer than both the global "mark all read" mark and
 // any dismissal of that specific notification.
 function isUnread(changedAt, seenAt, dismissedAt) {
@@ -2457,9 +2476,12 @@ app.get('/api/notifications', async (req, res) => {
     // user last cleared their notifications. A busy day must never push an unread
     // change out of a fixed-size window and silently lose it.
     const [recent, sinceSeen] = await Promise.all([
-      Revision.find({}).sort({ changedAt: -1 }).limit(400).lean(),
+      Revision.aggregate([{ $sort: { changedAt: -1 } }, { $limit: 400 }, { $project: NOTIFY_REVISION_FIELDS }]),
       seenAt
-        ? Revision.find({ changedAt: { $gt: new Date(seenAt) } }).sort({ changedAt: -1 }).limit(2000).lean()
+        ? Revision.aggregate([
+          { $match: { changedAt: { $gt: new Date(seenAt) } } },
+          { $sort: { changedAt: -1 } }, { $limit: 2000 }, { $project: NOTIFY_REVISION_FIELDS },
+        ])
         : Promise.resolve([]),
     ]);
     const merged = new Map();

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { notifyAuthChanged } from '../authEvents';
 
 function AdminLogin({ onLogin }) {
   const [email, setEmail] = useState('');
@@ -26,6 +27,7 @@ function AdminLogin({ onLogin }) {
       }
 
       localStorage.setItem('admin_token', data.token);
+      notifyAuthChanged();
       onLogin(data.token);
     } catch (err) {
       setError('Server unavailable. Please try again.');

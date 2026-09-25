@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { reportLogout } from './reportDownload';
+import { notifyAuthChanged } from './authEvents';
 import { Routes, Route, useSearchParams } from 'react-router-dom';
 import { startMicrosoftLogin } from './msalOauth';
 import Header from './components/Header';
@@ -76,13 +77,13 @@ function AdminRoute({ darkMode, setDarkMode }) {
     fetch('/api/admin/verify', { headers: { Authorization: 'Bearer ' + token } })
       .then((res) => {
         if (res.ok) { setVerified(true); }
-        else { localStorage.removeItem('admin_token'); setToken(''); setVerified(false); }
+        else { localStorage.removeItem('admin_token'); notifyAuthChanged(); setToken(''); setVerified(false); }
       })
       .catch(() => { setVerified(false); })
       .finally(() => setChecking(false));
   }, [token]);
 
-  const handleLogout = () => { reportLogout('admin'); localStorage.removeItem('admin_token'); setToken(''); setVerified(false); };
+  const handleLogout = () => { reportLogout('admin'); localStorage.removeItem('admin_token'); notifyAuthChanged(); setToken(''); setVerified(false); };
 
   if (checking) {
     return (

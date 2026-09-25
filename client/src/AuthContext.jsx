@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { reportLogout } from './reportDownload';
+import { notifyAuthChanged } from './authEvents';
 
 const AuthContext = createContext(null);
 
@@ -18,6 +19,7 @@ export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
         setUser(data.user);
       } else {
         localStorage.removeItem('docs_token');
+        notifyAuthChanged();
         setToken('');
         setUser(null);
       }
@@ -31,6 +33,8 @@ export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
     if (msRedirectToken) {
       // msRedirectToken is already our JWT (exchanged in main.jsx)
       localStorage.setItem('docs_token', msRedirectToken);
+      // Data requested before this point went out without a token; reload it.
+      notifyAuthChanged();
       setToken(msRedirectToken);
       verify(msRedirectToken);
     } else {
@@ -47,6 +51,7 @@ export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Login failed');
     localStorage.setItem('docs_token', data.token);
+    notifyAuthChanged();
     setToken(data.token);
     setUser(data.user);
     return data.user;
@@ -61,6 +66,7 @@ export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Microsoft login failed');
     localStorage.setItem('docs_token', data.token);
+    notifyAuthChanged();
     setToken(data.token);
     setUser(data.user);
     return data.user;
@@ -69,6 +75,7 @@ export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
   const logout = () => {
     reportLogout('docs'); // must run before the token is cleared
     localStorage.removeItem('docs_token');
+    notifyAuthChanged();
     setToken('');
     setUser(null);
   };

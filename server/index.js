@@ -3199,10 +3199,13 @@ app.get('/api/documents', async (req, res) => {
     // No `content` in the list: it holds inline base64 images and the tree only
     // needs names, folders, type and lock state. The body comes from
     // /api/documents/:slug when the document is opened (and is access-checked there).
-    const items = await DocModel.find({ isDeleted: { $ne: true } })
-      .select('name slug fileType fileUrl folderId order createdAt')
-      .sort({ order: 1, createdAt: 1 }).lean();
-    const access = await grantsFor(req);
+    // The list and the caller's grants are independent reads, fetched concurrently.
+    const [items, access] = await Promise.all([
+      DocModel.find({ isDeleted: { $ne: true } })
+        .select('name slug fileType fileUrl folderId order createdAt')
+        .sort({ order: 1, createdAt: 1 }).lean(),
+      grantsFor(req),
+    ]);
     const folders = access.admin ? [] : await liveFolders();
 
     res.json({
@@ -3317,10 +3320,14 @@ app.get('/api/search', async (req, res) => {
 
 app.get('/api/documents/:slug', async (req, res) => {
   try {
-    const item = await DocModel.findOne({ slug: req.params.slug, isDeleted: { $ne: true } }).lean();
+    // grantsFor never rejects (it fails closed), so fetching it alongside the
+    // document leaves the 404 and error paths exactly as they were.
+    const [item, access] = await Promise.all([
+      DocModel.findOne({ slug: req.params.slug, isDeleted: { $ne: true } }).lean(),
+      grantsFor(req),
+    ]);
     if (!item) return res.status(404).json({ error: 'Not found' });
 
-    const access = await grantsFor(req);
     if (!access.admin) {
       const folders = await liveFolders();
       if (!canOpenDocument(access, folders, item)) {

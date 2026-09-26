@@ -275,9 +275,9 @@ function EditFeatureTab({ refreshKey, onChanged }) {
     return data.paths;
   };
 
-  // Saves one feature. Family is still renamed across the whole group when it
-  // changes, matching how the bulk save behaved — a family is a shared tag, not a
-  // per-feature value.
+  // Saves one feature. Changing its Family moves only this feature: pick an
+  // existing family to join it, or type a new name to start a new family. Other
+  // features keep their family.
   const handleSaveOne = async (featureId) => {
     const feature = features.find(f => f.id === featureId);
     if (!feature) return;
@@ -288,25 +288,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
 
     setSavingId(featureId);
     try {
-      const orig = originalFeatures.find(f => f.id === featureId);
       const newFamily = feature.family ? feature.family.trim() : '';
-      const oldFamily = orig && orig.family ? orig.family.trim() : '';
-      let familyRenamed = false;
-
-      if (oldFamily && newFamily && oldFamily !== newFamily) {
-        await fetch('/api/features/rename-family', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            productType,
-            scope,
-            combination: combination || '',
-            oldFamily,
-            newFamily,
-          }),
-        });
-        familyRenamed = true;
-      }
 
       let screenshotPaths = [...(feature.screenshots || [])];
       if (feature._pendingFiles && feature._pendingFiles.length > 0) {
@@ -327,9 +309,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      let msg = `"${feature.name.trim()}" updated successfully!`;
-      if (familyRenamed) msg += ' Family renamed across all features in that group.';
-      showToast(msg);
+      showToast(`"${feature.name.trim()}" updated successfully!`);
       if (onChanged) onChanged();
 
       // leave edit mode for this card only
@@ -610,6 +590,8 @@ function EditFeatureTab({ refreshKey, onChanged }) {
               onChange={(e) => { setParams({ product: e.target.value, scope: '', combination: '' }); setDeletePTConfirm(false); }}
               options={productTypes.map(pt => ({ value: pt, label: pt }))}
               placeholder="-- Select Product Type --"
+              searchable
+              searchPlaceholder="Search product types…"
             />
             {productType && scope && !deletePTConfirm && (
               <button className="btn-delete-inline" onClick={() => setDeletePTConfirm(true)} title={`Delete all ${scope === 'inscope' ? 'In Scope' : 'Out of Scope'} features for this product type`}>
@@ -685,6 +667,8 @@ function EditFeatureTab({ refreshKey, onChanged }) {
                 { value: 'outscope', label: 'Out of Scope' },
               ]}
               placeholder="-- Select Scope --"
+              searchable
+              searchPlaceholder="Search scope…"
             />
           </div>
         </div>
@@ -706,6 +690,8 @@ function EditFeatureTab({ refreshKey, onChanged }) {
                 }}
                 options={combinations.map(c => ({ value: c, label: c }))}
                 placeholder="-- Select Combination --"
+                searchable
+                searchPlaceholder="Search combinations…"
               />
               {combination && !deleteComboAllConfirm && (
                 <>
@@ -877,6 +863,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
                             onChange={handleFeatureChange}
                             onRemove={() => {}}
                             showRemove={false}
+                            familyOptions={[...new Set(originalFeatures.map(f => (f.family || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))}
                           />
                         ) : (
                           <ReadOnlyFeature feature={feature} index={idx} />

@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react';
+import FamilyInput from './FamilyInput';
 
-function FeatureCard({ feature, index, onChange, onRemove, showRemove, nameError }) {
+function FeatureCard({ feature, index, onChange, onRemove, showRemove, nameError, familyOptions = [] }) {
   const fileInputRef = useRef(null);
   const cardRef = useRef(null);
 
@@ -127,11 +128,12 @@ function FeatureCard({ feature, index, onChange, onRemove, showRemove, nameError
 
         <div className="form-group">
           <label>Family</label>
-          <input
-            type="text"
-            placeholder="e.g. Migration, Channels, Direct Messages"
+          {/* Pick an existing family, or type a new name to start a new family. */}
+          <FamilyInput
+            placeholder={familyOptions.length ? 'Pick a family or type a new one' : 'e.g. Migration, Channels, Direct Messages'}
             value={feature.family || ''}
-            onChange={(e) => handleFieldChange('family', e.target.value)}
+            options={familyOptions}
+            onChange={(v) => handleFieldChange('family', v)}
           />
         </div>
 

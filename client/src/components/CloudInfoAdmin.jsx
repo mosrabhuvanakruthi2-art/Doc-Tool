@@ -5,9 +5,20 @@ import { showToast } from './Toast';
 import CfLoader from './CfLoader';
 import { useUrlParams } from '../useUrlParams';
 import { useLinkDialog } from './AppDialog';
+import { TEXT_EXTS } from './FilePreview';
+import { cleanHtml } from '../sanitize';
 
 const MAX_CLOUD_INFO_PAGES = 50;
 const MAX_CLOUD_INFO_IMAGES = 200;
+// Cloud Info keeps formatted text only (no file storage), so an upload is turned
+// into editor content: Word and HTML keep their formatting, text-type files come
+// in as text, and images are added into the page.
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+const CSV_EXTS = ['csv', 'tsv'];
+const escapeText = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const readAsDataUrl = (file) => new Promise((resolve, reject) => {
+  const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = () => reject(r.error); r.readAsDataURL(file);
+});
 
 function getCloudInfoStatsFromHtml(html = '') {
   const safeHtml = String(html || '');
@@ -17,6 +28,13 @@ function getCloudInfoStatsFromHtml(html = '') {
   return { pageCount, imageCount };
 }
 
+// Does editor HTML hold anything real (text, an image, a table…), not just empty tags?
+const htmlHasContent = (html) => {
+  const h = String(html || '');
+  if (/<(img|table|video|audio|iframe|hr)\b/i.test(h)) return true;
+  return h.replace(/<[^>]*>/g, '').replace(/&nbsp;|\u00a0/g, ' ').trim().length > 0;
+};
+
 function CloudInfoAdmin({ onChanged }) {
   const [items, setItems] = useState([]);
   // True until the first list fetch settles, so the empty state never flashes.
@@ -25,6 +43,10 @@ function CloudInfoAdmin({ onChanged }) {
   const [selectedId, setSelectedId] = useState('');
   const [name, setName] = useState('');
   const [content, setContent] = useState('');
+  // What is typed in the editor right now (it is not a controlled input), so Save
+  // can stay disabled until there is some content (same as Documents).
+  const [editorHtml, setEditorHtml] = useState('');
+  useEffect(() => { setEditorHtml(content); }, [content]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -47,6 +69,10 @@ function CloudInfoAdmin({ onChanged }) {
   const [param, setParams] = useUrlParams();
   const urlItem = param('item');
   const urlNew = param('new') === '1';
+  // Search bar (?q=) at the right of the header; kept in the URL so refresh keeps it.
+  const urlQ = param('q');
+  const searchText = urlQ.trim().toLowerCase();
+  const setSearch = (v) => { if (v) setShowReorder(false); setParams({ q: v }, { replace: true }); };
   const loadedSlugRef = useRef('');
 
   useEffect(() => {
@@ -99,40 +125,70 @@ function CloudInfoAdmin({ onChanged }) {
     }
   };
 
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  const [dragOver, setDragOver] = useState(false); // upload drop-zone highlight
 
+  const handleFileUpload = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (file) processFile(file);
+  };
+
+  // Put new HTML in the editor, after checking the page / image limits.
+  const applyHtml = (html, message) => {
+    const stats = getCloudInfoStatsFromHtml(html);
+    if (stats.pageCount > MAX_CLOUD_INFO_PAGES) throw new Error(`It has ${stats.pageCount} pages. Maximum allowed is ${MAX_CLOUD_INFO_PAGES}.`);
+    if (stats.imageCount > MAX_CLOUD_INFO_IMAGES) throw new Error(`It has ${stats.imageCount} images. Maximum allowed is ${MAX_CLOUD_INFO_IMAGES}.`);
+    setContent(html);
+    setUploadStats(stats);
+    if (editorRef.current) editorRef.current.innerHTML = html;
+    showToast(message(stats));
+  };
+
+  const processFile = async (file) => {
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const mammoth = await loadMammoth();
-      const options = {
-        convertImage: mammoth.images.imgElement(function(image) {
-          return image.read('base64').then(function(imageBuffer) {
-            return { src: 'data:' + image.contentType + ';base64,' + imageBuffer };
-          });
-        })
-      };
-      const result = await mammoth.convertToHtml({ arrayBuffer }, options);
-      const html = result.value;
-      const stats = getCloudInfoStatsFromHtml(html);
-      if (stats.pageCount > MAX_CLOUD_INFO_PAGES) {
-        throw new Error(`Document has ${stats.pageCount} pages. Maximum allowed is ${MAX_CLOUD_INFO_PAGES}.`);
+      if (ext === 'docx') { await importDocx(file); return; }
+      if (ext === 'html' || ext === 'htm') {
+        applyHtml(cleanHtml(await file.text()), () => 'HTML loaded — edit and Save');
+        return;
       }
-      if (stats.imageCount > MAX_CLOUD_INFO_IMAGES) {
-        throw new Error(`Document has ${stats.imageCount} images. Maximum allowed is ${MAX_CLOUD_INFO_IMAGES}.`);
+      if (CSV_EXTS.includes(ext) || TEXT_EXTS.includes(ext)) {
+        applyHtml('<pre>' + escapeText(await file.text()) + '</pre>', () => `${ext.toUpperCase()} loaded — edit and Save`);
+        return;
       }
-      setContent(html);
-      setUploadStats(stats);
-      if (editorRef.current) editorRef.current.innerHTML = html;
-      showToast(`Document uploaded successfully (${stats.pageCount} pages, ${stats.imageCount} images).`);
+      if (IMAGE_EXTS.includes(ext)) {
+        // Images are added to the end of the page (the rest is kept).
+        const current = editorRef.current ? editorRef.current.innerHTML : content;
+        const img = `<p><img src="${await readAsDataUrl(file)}" alt="${escapeText(file.name)}"></p>`;
+        applyHtml(current + img, () => 'Image added — Save to keep it');
+        return;
+      }
+      showToast(`.${ext || 'this'} files can't become editable text here. Use Word (.docx), HTML, text or images — or add the file in Documents.`, 'error');
     } catch (err) {
-      showToast('Failed to parse document: ' + err.message, 'error');
+      showToast('Failed to read file: ' + err.message, 'error');
     }
+  };
+
+  const importDocx = async (file) => {
+    const arrayBuffer = await file.arrayBuffer();
+    const mammoth = await loadMammoth();
+    const options = {
+      convertImage: mammoth.images.imgElement(function(image) {
+        return image.read('base64').then(function(imageBuffer) {
+          return { src: 'data:' + image.contentType + ';base64,' + imageBuffer };
+        });
+      })
+    };
+    const result = await mammoth.convertToHtml({ arrayBuffer }, options);
+    applyHtml(result.value, (stats) => `Document uploaded successfully (${stats.pageCount} pages, ${stats.imageCount} images).`);
   };
 
   const handleSave = async () => {
     if (!name.trim()) { showToast('Name is required', 'error'); return; }
+    if (!htmlHasContent(editorRef.current ? editorRef.current.innerHTML : content)) {
+      showToast('Add some content before saving', 'error');
+      return;
+    }
 
     const finalContent = editorRef.current ? editorRef.current.innerHTML : content;
     setSaving(true);
@@ -294,7 +350,29 @@ function CloudInfoAdmin({ onChanged }) {
       <div className="cloud-info-admin">
         <div className="cloud-info-header">
           <h3>Cloud Info Management</h3>
+          {items.length > 1 && !searchText && (
+            <button className="btn-reorder-toggle" onClick={() => setShowReorder(prev => !prev)}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><polyline points="10 3 8 6 6 3"/><polyline points="14 21 16 18 18 21"/></svg>
+              {showReorder ? 'Hide Reorder' : 'Reorder Items'}
+            </button>
+          )}
           <button className="btn-create-new" onClick={handleNew}>+ New Cloud Info</button>
+          {items.length > 0 && (
+            <div className="ci-search-bar">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+              <input
+                type="text"
+                value={urlQ}
+                placeholder="Search cloud info…"
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') setSearch(''); }}
+                aria-label="Search cloud info"
+              />
+              {urlQ && (
+                <button type="button" className="ci-search-clear" onClick={() => setSearch('')} title="Clear" aria-label="Clear search">×</button>
+              )}
+            </div>
+          )}
         </div>
 
         {listLoading && items.length === 0 ? (
@@ -303,13 +381,9 @@ function CloudInfoAdmin({ onChanged }) {
           <p className="cloud-info-empty">No Cloud Info entries yet. Click "New Cloud Info" to create one.</p>
         ) : (
           <>
-            {items.length > 1 && (
+            {items.length > 1 && showReorder && !searchText && (
               <div className="reorder-toggle-section">
-                <button className="btn-reorder-toggle" onClick={() => setShowReorder(prev => !prev)}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><polyline points="10 3 8 6 6 3"/><polyline points="14 21 16 18 18 21"/></svg>
-                  {showReorder ? 'Hide Reorder' : 'Reorder Items'}
-                </button>
-                {showReorder && (
+                {(
                   <div className="reorder-list">
                     <label className="reorder-label">Cloud Info Order <span className="drag-hint-inline">(drag to reorder)</span></label>
                     {items.map((item, idx) => (
@@ -335,12 +409,31 @@ function CloudInfoAdmin({ onChanged }) {
                 )}
               </div>
             )}
+            {searchText && (() => {
+              const n = items.filter(it => String(it.name || '').toLowerCase().includes(searchText)).length;
+              return (
+                <p className="doc-search-summary">
+                  {n ? `${n} result${n !== 1 ? 's' : ''} for “${urlQ.trim()}”` : `No cloud info matches “${urlQ.trim()}”.`}
+                </p>
+              );
+            })()}
             <div className="cloud-info-list">
-              {items.map((item) => (
-                <div key={item._id} className="cloud-info-list-item">
-                  <div className="cloud-info-list-name">{item.name}</div>
+              {items.filter(it => !searchText || String(it.name || '').toLowerCase().includes(searchText)).map((item) => (
+                <div
+                  key={item._id}
+                  className="cloud-info-list-item cloud-info-list-open"
+                  title="Open (read-only)"
+                  onClick={(e) => { if (!e.target.closest('button, input, a')) openItem(item); }}
+                >
+                  <div className="cloud-info-list-name">
+                    <svg className="cloud-info-list-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => { if (e.key === 'Enter') openItem(item); }}
+                    >{item.name}</span>
+                  </div>
                   <div className="cloud-info-list-actions">
-                    <button className="btn-edit-sm" onClick={() => openItem(item)}>Edit</button>
                     <button className="btn-delete-inline" onClick={() => { setDeleteInput(''); setDeleteConfirm(item._id); }}>Delete</button>
                   </div>
                 </div>
@@ -354,16 +447,21 @@ function CloudInfoAdmin({ onChanged }) {
   }
 
   return (
-    <div className="cloud-info-admin cloud-info-admin-fixed" ref={formTopRef}>
+    <div className="cloud-info-admin doc-admin-flow" ref={formTopRef}>
       <div className="cloud-info-sticky-top">
         <div className="cloud-info-header">
           <button className="btn-back" onClick={handleBack}>&larr; Back</button>
-          <h3>{mode === 'create' ? 'Create Cloud Info' : `Edit: ${name}`}</h3>
+          <h3>{mode === 'create' ? 'Create Cloud Info' : name}</h3>
           <div className="cloud-info-header-actions">
             {!loading && (
               isEditing ? (
                 <>
-                  <button className="btn-save" onClick={handleSave} disabled={saving}>
+                  <button
+                    className="btn-save"
+                    onClick={handleSave}
+                    disabled={saving || !htmlHasContent(editorHtml)}
+                    title={htmlHasContent(editorHtml) ? undefined : 'Add some content first'}
+                  >
                     {saving ? 'Saving...' : 'Save'}
                   </button>
                   {mode === 'edit' && (
@@ -392,14 +490,30 @@ function CloudInfoAdmin({ onChanged }) {
 
             {isEditing && (
               <div className="form-group">
-                <label>Upload Document (.docx)</label>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  accept=".docx"
-                  onChange={handleFileUpload}
-                />
+                <label>Upload File</label>
+                <div
+                  className={`doc-dropzone${dragOver ? ' doc-dropzone-over' : ''}`}
+                  onDragOver={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; if (!dragOver) setDragOver(true); }}
+                  onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOver(false);
+                    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+                    if (file) processFile(file);
+                  }}
+                  onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputRef.current && fileInputRef.current.click(); } }}
+                >
+                  <svg className="doc-dropzone-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <div className="doc-dropzone-text">
+                    <strong>{dragOver ? 'Drop to add' : 'Drag & drop'}</strong> a file here, or <span className="doc-dropzone-link">browse</span>
+                  </div>
+                </div>
+                <input type="file" ref={fileInputRef} onChange={handleFileUpload} hidden />
                 <small className="cloud-upload-meta">
+                  Word (.docx) and HTML keep their formatting, text files load as text, images are added to the page.{' '}
                   Supports up to {MAX_CLOUD_INFO_PAGES} pages and {MAX_CLOUD_INFO_IMAGES}+ images. Current: {uploadStats.pageCount || 0} pages, {uploadStats.imageCount || 0} images.
                 </small>
               </div>
@@ -444,6 +558,7 @@ function CloudInfoAdmin({ onChanged }) {
               contentEditable
               suppressContentEditableWarning
               dangerouslySetInnerHTML={{ __html: content }}
+              onInput={(e) => setEditorHtml(e.currentTarget.innerHTML)}
             />
           ) : (
             <div className="cloud-info-preview" dangerouslySetInnerHTML={{ __html: content || '<em>No content yet</em>' }} />

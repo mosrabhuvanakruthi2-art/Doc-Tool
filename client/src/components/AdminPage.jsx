@@ -22,18 +22,11 @@ function AdminPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const isFeatures = activeTab === 'edit' || activeTab === 'add';
 
-  // A new tab starts clean (its own params only). Edit <-> Add keeps the chosen
-  // product type / scope / combination so the other view opens on the same one.
+  // Every tab switch starts clean (its own params only): + Add Feature opens an
+  // empty form and ← Back to Features opens plain Features.
   const handleTabChange = (tab) => {
     if (tab === activeTab) return;
-    const next = new URLSearchParams({ tab });
-    if ((tab === 'edit' || tab === 'add') && isFeatures) {
-      ['product', 'scope', 'combination'].forEach((k) => {
-        const v = searchParams.get(k);
-        if (v) next.set(k, v);
-      });
-    }
-    setSearchParams(next);
+    setSearchParams(new URLSearchParams({ tab }));
   };
 
   const handleSaved = () => {
@@ -71,11 +64,11 @@ function AdminPage() {
         </div>
 
         {isFeatures && (
-          <div className="admin-features-bar">
+          <div className={`admin-features-bar${activeTab === 'add' ? ' is-back' : ''}`}>
             {activeTab === 'edit' ? (
               <button className="btn-create-new" onClick={() => handleTabChange('add')}>+ Add Feature</button>
             ) : (
-              <button className="btn-create-new" onClick={() => handleTabChange('edit')}>← Back to Features</button>
+              <button className="btn-back" onClick={() => handleTabChange('edit')}>&larr; Back</button>
             )}
           </div>
         )}

@@ -34,6 +34,7 @@ function CompatibilityAdmin({ onChanged }) {
   const [parsedPreview, setParsedPreview] = useState(null);
   const [showReorder, setShowReorder] = useState(false);
   const fileInputRef = useRef(null);
+  const [dragOver, setDragOver] = useState(false); // Excel drop-zone highlight
   const editorRef = useRef(null);
   const matrixDragItem = useRef(null);
   const matrixDragOver = useRef(null);
@@ -415,6 +416,8 @@ function CompatibilityAdmin({ onChanged }) {
                   onChange={(e) => { if (e.target.value) openMatrix(e.target.value); }}
                   options={matrices.map(m => ({ value: m._id, label: m.name }))}
                   placeholder="-- Select Matrix --"
+                  searchable
+                  searchPlaceholder="Search matrices…"
                 />
               </div>
             </div>
@@ -459,10 +462,10 @@ function CompatibilityAdmin({ onChanged }) {
         <div ref={editorRef}>
           <div className="compat-admin-toolbar">
             <button className="btn-secondary" onClick={backToList}>
-              Back to List
+              &larr; Back
             </button>
             <button
-              className={`btn-secondary ${importMode === 'paste' ? 'active' : ''}`}
+              className={`btn-secondary compat-toolbar-push ${importMode === 'paste' ? 'active' : ''}`}
               onClick={() => { setImportMode(importMode === 'paste' ? 'none' : 'paste'); setParsedPreview(null); }}
             >
               Paste from Excel
@@ -495,12 +498,33 @@ function CompatibilityAdmin({ onChanged }) {
                   The first row should be headers (first cell = feature label, remaining = column names).
                   Each subsequent row = feature name + cell values.
                 </p>
+                {/* Same drop box as Documents: drag a file in, or click to browse. */}
+                <div
+                  className={`doc-dropzone${dragOver ? ' doc-dropzone-over' : ''}`}
+                  onDragOver={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; if (!dragOver) setDragOver(true); }}
+                  onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOver(false);
+                    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+                    if (file) handleFileUpload({ target: { files: [file] } });
+                  }}
+                  onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInputRef.current && fileInputRef.current.click(); } }}
+                >
+                  <svg className="doc-dropzone-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <div className="doc-dropzone-text">
+                    <strong>{dragOver ? 'Drop to add' : 'Drag & drop'}</strong> an Excel or CSV file here, or <span className="doc-dropzone-link">browse</span>
+                  </div>
+                </div>
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept=".xlsx,.xls,.csv"
-                  onChange={handleFileUpload}
-                  className="file-upload-input"
+                  onChange={(e) => { handleFileUpload(e); e.target.value = ''; }}
+                  hidden
                 />
               </div>
             </div>

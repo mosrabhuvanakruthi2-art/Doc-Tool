@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect } from 'react';
+import { useUrlParams } from '../useUrlParams';
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
 
@@ -7,6 +8,11 @@ function TrashAdmin({ onChanged }) {
   const [loading, setLoading] = useState(true);
   const [permanentDelete, setPermanentDelete] = useState(null);
   const [deleteInput, setDeleteInput] = useState('');
+  // Search box: kept in the URL (?q=) like the other admin tabs, so refresh keeps it.
+  const [param, setParams] = useUrlParams();
+  const query = param('q');
+  const q = query.trim().toLowerCase();
+  let matchCount = 0;
 
   useEffect(() => { fetchTrash(); }, []);
 
@@ -72,11 +78,17 @@ function TrashAdmin({ onChanged }) {
 
   const renderSection = (title, items, type, getLabel) => {
     if (!items || items.length === 0) return null;
+    // Search matches the item's label or its section name (e.g. "features").
+    const shown = q && !title.toLowerCase().includes(q)
+      ? items.filter(item => String(getLabel(item) || '').toLowerCase().includes(q))
+      : items;
+    matchCount += shown.length;
+    if (!shown.length) return null;
     return (
       <div className="trash-section">
-        <h4 className="trash-section-title">{title} ({items.length})</h4>
+        <h4 className="trash-section-title">{title} ({q ? `${shown.length} of ${items.length}` : items.length})</h4>
         <div className="trash-items">
-          {items.map(item => {
+          {shown.map(item => {
             const id = item.id || item._id;
             const label = getLabel(item);
             return (
@@ -102,6 +114,16 @@ function TrashAdmin({ onChanged }) {
       <div className="trash-header">
         <h3>Trash</h3>
         <span className="trash-count">{totalItems} item{totalItems !== 1 ? 's' : ''} in trash</span>
+        {totalItems > 0 && (
+          <input
+            type="search"
+            className="trash-search"
+            placeholder="Search trash…"
+            value={query}
+            onChange={(e) => setParams({ q: e.target.value }, { replace: true })}
+            aria-label="Search trash"
+          />
+        )}
       </div>
 
       {permanentDelete && (
@@ -145,6 +167,9 @@ function TrashAdmin({ onChanged }) {
             return f.name + (carries.length ? ` (with ${carries.join(' and ')})` : '');
           })}
           {renderSection('Documents', trash.documents || [], 'document', d => d.name)}
+          {q && matchCount === 0 && (
+            <div className="trash-empty"><p>Nothing in the trash matches “{query.trim()}”.</p></div>
+          )}
         </>
       )}
     </div>

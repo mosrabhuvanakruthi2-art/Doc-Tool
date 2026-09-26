@@ -37,6 +37,7 @@ function FeatureScopeForm({ onSaved }) {
   const [savingCombo, setSavingCombo] = useState(false);
 
   const [existingNamesLower, setExistingNamesLower] = useState(() => new Set());
+  const [existingFamilies, setExistingFamilies] = useState([]); // for the Family field
 
   const combinations = productType ? (combinationsByProduct[productType] || []) : [];
 
@@ -65,9 +66,10 @@ function FeatureScopeForm({ onSaved }) {
             .filter(Boolean),
         );
         setExistingNamesLower(names);
+        setExistingFamilies([...new Set((data.features || []).map((f) => (f.family || '').trim()).filter(Boolean))]);
       })
       .catch(() => {
-        if (!cancelled) setExistingNamesLower(new Set());
+        if (!cancelled) { setExistingNamesLower(new Set()); setExistingFamilies([]); }
       });
     return () => {
       cancelled = true;
@@ -269,6 +271,8 @@ function FeatureScopeForm({ onSaved }) {
               onChange={(e) => { setParams({ product: e.target.value, scope: '', combination: '' }); cancelNewPT(); }}
               options={productTypes.map(pt => ({ value: pt, label: pt }))}
               placeholder="-- Select Product Type --"
+              searchable
+              searchPlaceholder="Search product types…"
             />
             {!showNewPT && (
               <button className="btn-create-new" onClick={() => setShowNewPT(true)} title="Create new product type">
@@ -311,6 +315,8 @@ function FeatureScopeForm({ onSaved }) {
                 { value: 'outscope', label: 'Out of Scope' },
               ]}
               placeholder="-- Select Scope --"
+              searchable
+              searchPlaceholder="Search scope…"
             />
           </div>
         </div>
@@ -327,6 +333,8 @@ function FeatureScopeForm({ onSaved }) {
                 onChange={(e) => { setParams({ combination: e.target.value }); cancelNewCombo(); }}
                 options={combinations.map(c => ({ value: c, label: c }))}
                 placeholder="-- Select Combination --"
+                searchable
+                searchPlaceholder="Search combinations…"
               />
               {!showNewCombo && (
                 <button className="btn-create-new" onClick={() => setShowNewCombo(true)} title="Create new combination">
@@ -378,6 +386,7 @@ function FeatureScopeForm({ onSaved }) {
                 onRemove={removeFeature}
                 showRemove={features.length > 1}
                 nameError={nameErrorsByIndex[idx] || ''}
+                familyOptions={[...new Set([...existingFamilies, ...features.filter((_, j) => j !== idx).map((f) => (f.family || '').trim()).filter(Boolean)])].sort((a, b) => a.localeCompare(b))}
               />
             ))}
           </div>

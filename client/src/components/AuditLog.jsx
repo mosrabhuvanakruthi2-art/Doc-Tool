@@ -157,15 +157,6 @@ function AuditLog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applied, page]);
 
-  // Quick range buttons — the common questions are "today" and "this week".
-  const quickRange = (days) => {
-    const to = new Date();
-    const from = new Date();
-    from.setDate(from.getDate() - days);
-    const iso = (d) => d.toISOString().slice(0, 10);
-    setFilters(prev => ({ ...prev, from: iso(from), to: iso(to) }));
-  };
-
   // Fetched rather than opened in a tab: a plain navigation cannot carry the
   // Authorization header, and the export route is admin-only.
   const exportCsv = async () => {
@@ -236,13 +227,6 @@ function AuditLog() {
         {activeCount > 0 && (
           <button className="audit-btn audit-btn-ghost" onClick={clear}>Clear ({activeCount})</button>
         )}
-      </div>
-
-      <div className="audit-quick">
-        <span className="audit-quick-label">Quick range:</span>
-        <button className="audit-chip" onClick={() => quickRange(0)}>Today</button>
-        <button className="audit-chip" onClick={() => quickRange(7)}>Last 7 days</button>
-        <button className="audit-chip" onClick={() => quickRange(30)}>Last 30 days</button>
       </div>
 
       {error && <div className="audit-error">{error}</div>}

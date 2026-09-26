@@ -42,6 +42,13 @@ const CHEVRON = (expanded) => (
   </svg>
 );
 
+// Does editor HTML hold anything real (text, an image, a table…), not just empty tags?
+const htmlHasContent = (html) => {
+  const h = String(html || '');
+  if (/<(img|table|video|audio|iframe|hr)\b/i.test(h)) return true;
+  return h.replace(/<[^>]*>/g, '').replace(/&nbsp;|\u00a0/g, ' ').trim().length > 0;
+};
+
 function DocumentsAdmin({ onChanged }) {
   const [items, setItems] = useState([]);
   const [folders, setFolders] = useState([]);
@@ -51,6 +58,10 @@ function DocumentsAdmin({ onChanged }) {
   const [selectedId, setSelectedId] = useState('');
   const [name, setName] = useState('');
   const [content, setContent] = useState('');
+  // What is typed in the editor right now (it is not a controlled input), so Save
+  // can stay disabled until there is some content or a file.
+  const [editorHtml, setEditorHtml] = useState('');
+  useEffect(() => { setEditorHtml(content); }, [content]);
   const [fileType, setFileType] = useState('manual');
   const [fileUrl, setFileUrl] = useState('');   // saved uploaded file, if any
   const [formFolderId, setFormFolderId] = useState('');
@@ -95,7 +106,6 @@ function DocumentsAdmin({ onChanged }) {
 
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null); // the Upload Folder button's picker
-  const filesInputRef = useRef(null);  // the Upload Files button's picker
   const [uploadMode, setUploadMode] = useState(''); // our Upload window: 'folder' | 'files' | '' (closed)
   const editorRef = useRef(null);
   const formTopRef = useRef(null);
@@ -272,14 +282,15 @@ function DocumentsAdmin({ onChanged }) {
     },
   });
 
-  const toggleFolder = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
+  // File Explorer style: the list shows one folder at a time. Opening a folder
+  // pushes it into the URL (?dir=<id>), so refresh, Back/Forward and links work.
+  const openFolder = (id) => { setNewFolderIn(null); setRenamingId(null); setSearchOpen(false); setParams({ dir: id || '', q: '' }); };
 
   // ---------------- folder actions ----------------
 
   const startNewFolder = (parentId) => {
     setNewFolderIn(parentId || '');
     setNewFolderName('');
-    if (parentId) setExpanded(prev => ({ ...prev, [parentId]: true }));
   };
 
   const submitNewFolder = async () => {
@@ -493,13 +504,38 @@ function DocumentsAdmin({ onChanged }) {
   const [param, setParams] = useUrlParams();
   const urlItem = param('item');
   const urlNew = param('new') === '1';
+  const urlEdit = param('edit') === '1'; // opened with the Edit button (else read-only)
   const urlFolder = param('folder');
+  const urlDir = param('dir');
+  // Search over every folder and file (?q=), opened from the search icon.
+  const urlQ = param('q');
+  const searchText = urlQ.trim().toLowerCase();
+  const [searchOpen, setSearchOpen] = useState(!!urlQ);
+  const openSearch = () => { setSearchOpen(true); setReorderMode(false); setMoveMode(false); setMoveSel([]); setNewFolderIn(null); };
+  const closeSearch = () => { setSearchOpen(false); setParams({ q: '' }, { replace: true }); };
+  // "Documents / Guides / Migration" for a folder id ('' = top level).
+  const pathLabel = (folderId) => {
+    const byId = new Map(folders.map(f => [f.id, f]));
+    const parts = []; const seen = new Set(); let cur = byId.get(folderId || '');
+    while (cur && !seen.has(cur.id)) { seen.add(cur.id); parts.unshift(cur.name); cur = cur.parentId ? byId.get(cur.parentId) : null; }
+    return ['Documents', ...parts].join(' / ');
+  };
+  // Trust the URL until folders load; afterwards a folder that no longer exists
+  // (deleted elsewhere) falls back to the top level.
+  const currentDir = urlDir && (listLoading || folders.some(f => f.id === urlDir)) ? urlDir : '';
+  // Breadcrumb: top level -> ... -> the open folder.
+  const crumbs = (() => {
+    const byId = new Map(folders.map(f => [f.id, f]));
+    const out = []; const seen = new Set(); let cur = byId.get(currentDir);
+    while (cur && !seen.has(cur.id)) { seen.add(cur.id); out.unshift(cur); cur = cur.parentId ? byId.get(cur.parentId) : null; }
+    return out;
+  })();
   const loadedSlugRef = useRef('');
   // After a save, point the URL at the saved document (new doc or renamed slug).
   const showSavedInUrl = (item) => {
     if (!item || !item.slug) return;
     loadedSlugRef.current = item.slug; // already on screen: no reload
-    setParams({ item: item.slug, new: '', folder: '' }, { replace: true });
+    setParams({ item: item.slug, new: '', folder: '', edit: '' }, { replace: true });
   };
 
   const resetForm = () => {
@@ -522,9 +558,10 @@ function DocumentsAdmin({ onChanged }) {
   };
 
   const handleNew = (folderId = '') => setParams({ new: 1, folder: typeof folderId === 'string' ? folderId : '', item: '' });
-  const openDoc = (doc) => setParams({ item: doc.slug, new: '', folder: '' });
+  // Clicking a document opens it read-only; its Edit button opens it for editing.
+  const openDoc = (doc, { edit = false } = {}) => setParams({ item: doc.slug, new: '', folder: '', edit: edit ? 1 : '' });
 
-  const handleEdit = async (item) => {
+  const handleEdit = async (item, editNow = true) => {
     setLoading(true);
     try {
       const res = await fetch(`/api/documents/${item.slug}`);
@@ -545,8 +582,8 @@ function DocumentsAdmin({ onChanged }) {
       }
       snapshotOriginal(data.item);
       setMode('edit');
-      // Open straight into edit mode — a single click on Edit starts editing.
-      setIsEditing(true);
+      // The Edit button opens straight into edit mode; a plain click is read-only.
+      setIsEditing(editNow);
       const html = data.item.content || '';
       if (html) setTimeout(() => { if (editorRef.current) editorRef.current.innerHTML = html; }, 0);
     } catch (err) {
@@ -725,7 +762,7 @@ function DocumentsAdmin({ onChanged }) {
       rootLabel,
       unsupported,
       ignoredLoose,
-      destinationId: '', // the folder it goes into ("Upload into"); '' = top level
+      destinationId: currentDir, // the folder it goes into ("Upload into"); '' = top level. Defaults to the open folder.
       stopped: false,
       items: items.map((it) => ({ path: it.relPath, file: it.file, status: 'waiting', error: '' })),
     };
@@ -796,16 +833,6 @@ function DocumentsAdmin({ onChanged }) {
     const items = picked.filter(f => !isSkippableFile(f)).map((f) => ({ file: f, relPath: f.webkitRelativePath || f.name }));
     if (!items.length) { showToast('No files found in that folder', 'error'); return; }
     const rootLabel = items[0].relPath.split('/')[0] || 'selected folder';
-    beginImport(items, { rootLabel, unsupported: picked.length - items.length, confirmFirst: true });
-  };
-
-  // Upload Files: the normal multi-file picker (no browser confirmation box).
-  const handleFilesPicked = (e) => {
-    const picked = Array.from(e.target.files || []);
-    e.target.value = '';
-    const items = picked.filter(f => !isSkippableFile(f)).map((f) => ({ file: f, relPath: f.name }));
-    if (!items.length) { showToast('No files selected', 'error'); return; }
-    const rootLabel = `${items.length} selected file${items.length !== 1 ? 's' : ''}`;
     beginImport(items, { rootLabel, unsupported: picked.length - items.length, confirmFirst: true });
   };
 
@@ -902,6 +929,11 @@ function DocumentsAdmin({ onChanged }) {
     }
 
     if (!name.trim()) { showToast('Name is required', 'error'); return; }
+    const liveHtml = editorRef.current ? editorRef.current.innerHTML : content;
+    if (!(pendingFile || pendingPreview || sheetEdit || fileUrl || htmlHasContent(liveHtml))) {
+      showToast('Add some content or a file before saving', 'error');
+      return;
+    }
 
     // A spreadsheet being edited in the grid: write the edited workbook and
     // either replace the existing file or create a new document.
@@ -1025,7 +1057,7 @@ function DocumentsAdmin({ onChanged }) {
     setDeleting(false);
   };
 
-  const handleBack = () => setParams({ item: '', new: '', folder: '' });
+  const handleBack = () => setParams({ item: '', new: '', folder: '', edit: '' });
 
   // Keep the page in step with the URL (clicks, refresh, Back/Forward, links).
   useEffect(() => {
@@ -1036,7 +1068,7 @@ function DocumentsAdmin({ onChanged }) {
     if (urlItem) {
       if (loadedSlugRef.current === urlItem && mode === 'edit') return;
       loadedSlugRef.current = urlItem;
-      handleEdit({ slug: urlItem });
+      handleEdit({ slug: urlItem }, urlEdit);
       return;
     }
     if (mode !== 'list') { loadedSlugRef.current = ''; resetForm(); setMode('list'); }
@@ -1093,7 +1125,35 @@ function DocumentsAdmin({ onChanged }) {
   // declared inside the body is a new type on every render, which would remount
   // these rows and knock the caret out of the name inputs mid-typing.
 
-  const renderDocRow = (doc, depth) => {
+  // A click anywhere on a row opens it, except on its own buttons/inputs.
+  const rowOpen = (fn) => (e) => { if (e.target.closest('button, input, select, a, .doc-tree-actions')) return; fn(); };
+
+  // Folder name: double-click renames. A single click on the name waits a moment
+  // (in case a second click follows) and then opens the folder; a click anywhere
+  // else on the row opens it straight away.
+  const nameClickTimer = useRef(null);
+  const onFolderRowClick = (folder) => rowOpen(() => {
+    if (renamingId === folder.id) return;
+    clearTimeout(nameClickTimer.current);
+    nameClickTimer.current = null;
+    openFolder(folder.id);
+  });
+  const onFolderNameClick = (folder) => (e) => {
+    e.stopPropagation();
+    if (renamingId === folder.id) return;
+    clearTimeout(nameClickTimer.current);
+    nameClickTimer.current = setTimeout(() => { nameClickTimer.current = null; openFolder(folder.id); }, 250);
+  };
+  const onFolderNameDoubleClick = (folder) => (e) => {
+    e.stopPropagation();
+    clearTimeout(nameClickTimer.current);
+    nameClickTimer.current = null;
+    setRenamingId(folder.id);
+    setRenameValue(folder.name);
+  };
+  useEffect(() => () => clearTimeout(nameClickTimer.current), []);
+
+  const renderDocRow = (doc, depth, where) => {
     const parentId = doc.folderId ? String(doc.folderId) : '';
     const dim = drag && drag.kind === 'doc' && drag.id === doc._id ? ' doc-tree-dragging' : '';
     return (
@@ -1104,6 +1164,8 @@ function DocumentsAdmin({ onChanged }) {
           {...dragProps('doc', doc, parentId)}
           {...dropProps('doc', doc)}
           {...(moveMode ? moveDragProps('doc', doc) : {})}
+          onClick={rowOpen(() => openDoc(doc))}
+          title="Open (read-only)"
         >
           <div className="doc-tree-label">
             {moveMode && (
@@ -1111,10 +1173,16 @@ function DocumentsAdmin({ onChanged }) {
                 onClick={(e) => e.stopPropagation()} onChange={() => toggleSelect('doc', doc)} />
             )}
             {reorderMode && GRIP}
-            <span className="doc-tree-name">{doc.name}</span>
+            <span className="doc-tree-icon doc-tree-icon-file">{FILE_ICON}</span>
+            <span
+              className="doc-tree-name"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter') openDoc(doc); }}
+            >{doc.name}</span>
+            {where && <span className="doc-tree-path" title={where}>in {where}</span>}
           </div>
           <div className="doc-tree-actions">
-            <button className="btn-edit-sm" onClick={() => openDoc(doc)}>Edit</button>
             <button className="btn-delete-inline" onClick={() => { setFolderDeleteConfirm(null); setDeleteInput(''); setDeleteConfirm(doc._id); }}>Delete</button>
           </div>
         </div>
@@ -1122,8 +1190,7 @@ function DocumentsAdmin({ onChanged }) {
     );
   };
 
-  const renderFolderNode = (folder, depth) => {
-    const open = !!expanded[folder.id];
+  const renderFolderNode = (folder, depth, where) => {
     const subfolders = childFolders(folder.id);
     const docs = childDocs(folder.id);
     const count = subfolders.length + docs.length;
@@ -1137,14 +1204,16 @@ function DocumentsAdmin({ onChanged }) {
           {...dragProps('folder', folder, folder.parentId || '')}
           {...dropProps('folder', folder)}
           {...(moveMode ? { ...moveDragProps('folder', folder), ...moveDropProps(folder) } : {})}
+          onClick={onFolderRowClick(folder)}
         >
           <div
             className="doc-tree-label doc-tree-toggle"
             role="button"
             tabIndex={0}
-            onClick={() => toggleFolder(folder.id)}
+            title="Open folder"
             onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFolder(folder.id); }
+              if (renamingId === folder.id) return;
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFolder(folder.id); }
             }}
           >
             {moveMode && (
@@ -1152,7 +1221,6 @@ function DocumentsAdmin({ onChanged }) {
                 onClick={(e) => e.stopPropagation()} onChange={() => toggleSelect('folder', folder)} />
             )}
             {reorderMode && GRIP}
-            {CHEVRON(open)}
             <span className="doc-tree-icon doc-tree-icon-folder">{FOLDER_ICON}</span>
             {renamingId === folder.id ? (
               <input
@@ -1171,37 +1239,25 @@ function DocumentsAdmin({ onChanged }) {
               <span
                 className="doc-tree-name doc-tree-name-editable"
                 title="Double-click to rename"
-                onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(folder.id); setRenameValue(folder.name); }}
+                onClick={onFolderNameClick(folder)}
+                onDoubleClick={onFolderNameDoubleClick(folder)}
               >
                 {folder.name}
               </span>
             )}
             <span className="doc-tree-count">{count === 0 ? 'empty' : `${count} item${count > 1 ? 's' : ''}`}</span>
+            {where && <span className="doc-tree-path" title={where}>in {where}</span>}
           </div>
 
           <div className="doc-tree-actions">
             {renamingId !== folder.id && (
               <>
-                <button className="btn-tree-action" onClick={() => startNewFolder(folder.id)}>+ Subfolder</button>
-                <button className="btn-tree-action" onClick={() => handleNew(folder.id)}>+ Document</button>
                 <button className="btn-delete-inline" onClick={() => { setDeleteConfirm(null); setDeleteInput(''); setFolderDeleteConfirm(folder.id); }}>Delete</button>
               </>
             )}
           </div>
         </div>
 
-        {open && (
-          <div className="doc-tree-children">
-            {newFolderIn === folder.id && renderNewFolderInput(depth + 1)}
-            {subfolders.map(sub => renderFolderNode(sub, depth + 1))}
-            {docs.map(doc => renderDocRow(doc, depth + 1))}
-            {count === 0 && newFolderIn !== folder.id && (
-              <div className="doc-tree-empty" style={{ paddingLeft: 12 + (depth + 1) * 20 }}>
-                This folder is empty.
-              </div>
-            )}
-          </div>
-        )}
       </div>
     );
   };
@@ -1285,9 +1341,15 @@ function DocumentsAdmin({ onChanged }) {
   };
 
   if (mode === 'list') {
-    const rootFolders = childFolders('');
-    const rootDocs = childDocs('');
+    // Only the open folder's contents are listed (File Explorer style).
+    const rootFolders = childFolders(currentDir);
+    const rootDocs = childDocs(currentDir);
     const empty = rootFolders.length === 0 && rootDocs.length === 0 && newFolderIn === null;
+    const noFoldersAtAll = folders.length === 0 && items.length === 0 && newFolderIn === null;
+    const searching = !!searchText;
+    const resultFolders = searching ? folders.filter(f => String(f.name || '').toLowerCase().includes(searchText)) : [];
+    const resultDocs = searching ? items.filter(x => String(x.name || '').toLowerCase().includes(searchText)) : [];
+    const resultCount = resultFolders.length + resultDocs.length;
 
     return (
       <div
@@ -1309,11 +1371,7 @@ function DocumentsAdmin({ onChanged }) {
           mode={uploadMode}
           onClose={() => setUploadMode('')}
           onDropData={(dt) => { setUploadMode(''); importDroppedData(dt); }}
-          onBrowse={() => {
-            const input = uploadMode === 'files' ? filesInputRef.current : folderInputRef.current;
-            setUploadMode('');
-            if (input) input.click();
-          }}
+          onBrowse={() => { setUploadMode(''); if (folderInputRef.current) folderInputRef.current.click(); }}
         />
         <FolderImportDialog
           job={importJob}
@@ -1325,52 +1383,110 @@ function DocumentsAdmin({ onChanged }) {
           onClose={() => setImportJob(null)}
         />
         <div className="cloud-info-header">
-          <h3>Documents Management</h3>
+          {/* The title is the folder path: click any part to go back up. */}
+          <nav className="doc-crumbs" aria-label="Folder path">
+            {currentDir && (
+              <button type="button" className="doc-crumb-up" title="Up one level" aria-label="Up one level"
+                onClick={() => openFolder(crumbs.length > 1 ? crumbs[crumbs.length - 2].id : '')}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></svg>
+              </button>
+            )}
+            <button type="button" className={`doc-crumb${currentDir ? '' : ' is-current'}`} onClick={() => openFolder('')}>Documents</button>
+            {crumbs.map((f, i) => (
+              <span key={f.id} className="doc-crumb-part">
+                {CHEVRON(false)}
+                <button type="button" className={`doc-crumb${i === crumbs.length - 1 ? ' is-current' : ''}`} onClick={() => openFolder(f.id)}>{f.name}</button>
+              </span>
+            ))}
+          </nav>
           <div className="doc-tree-header-actions">
-            {/* Browsers have no single picker for files and folders, so one button each.
-                Each opens our Upload window (drag & drop or browse), then "Upload into". */}
+            {!noFoldersAtAll && !searching && (
+              <>
+                <button
+                  className={`btn-reorder-toggle${reorderMode ? ' btn-reorder-toggle-active' : ''}`}
+                  onClick={() => { setReorderMode(prev => !prev); setDrag(null); setHint(null); setMoveMode(false); setMoveSel([]); }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><polyline points="10 3 8 6 6 3"/><polyline points="14 21 16 18 18 21"/></svg>
+                  {reorderMode ? 'Done Reordering' : 'Reorder Items'}
+                </button>
+                <button
+                  className={`btn-reorder-toggle${moveMode ? ' btn-reorder-toggle-active' : ''}`}
+                  onClick={toggleMoveMode}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+                  {moveMode ? 'Cancel Move' : 'Move Items'}
+                </button>
+                <span className="doc-header-sep" aria-hidden="true" />
+              </>
+            )}
+            {/* Upload Folder opens our Upload window (drag & drop or browse), then "Upload into".
+                Single files are added with + Files (the document form). */}
             {folderUpload ? (
               <button className="btn-create-new btn-create-folder" disabled>
                 {`Importing ${folderUpload.done}/${folderUpload.total}…`}
               </button>
             ) : (
-              <>
-                <button className="btn-create-new btn-create-folder" onClick={() => setUploadMode('folder')}>Upload Folder</button>
-                <button className="btn-create-new btn-create-folder" onClick={() => setUploadMode('files')}>Upload Files</button>
-              </>
+              <button className="btn-create-new btn-create-folder" onClick={() => setUploadMode('folder')}>Upload Folder</button>
             )}
-            <button className="btn-create-new btn-create-folder" onClick={() => startNewFolder('')}>+ New Folder</button>
+            <button className="btn-create-new btn-create-folder" onClick={() => startNewFolder(currentDir)}>+ New Folder</button>
+            <button className="btn-create-new btn-create-folder" onClick={() => handleNew(currentDir)}>+ Files</button>
             {/* webkitdirectory hands us a whole folder, each file's path in webkitRelativePath. */}
             <input ref={folderInputRef} type="file" webkitdirectory="" directory="" multiple hidden onChange={handleFolderPicked} />
-            <input ref={filesInputRef} type="file" multiple hidden onChange={handleFilesPicked} />
+            {/* Search icon (right-most): opens a box that searches all folders and files. */}
+            <div className={`doc-search${searchOpen ? ' is-open' : ''}`}>
+              {searchOpen && (
+                <input
+                  type="text"
+                  className="doc-search-input"
+                  placeholder="Search all folders and files…"
+                  value={urlQ}
+                  autoFocus
+                  onChange={(e) => setParams({ q: e.target.value }, { replace: true })}
+                  onKeyDown={(e) => { if (e.key === 'Escape') closeSearch(); }}
+                  aria-label="Search all folders and files"
+                />
+              )}
+              <button
+                type="button"
+                className="doc-search-btn"
+                onClick={searchOpen ? closeSearch : openSearch}
+                title={searchOpen ? 'Close search' : 'Search all folders and files'}
+                aria-label={searchOpen ? 'Close search' : 'Search'}
+              >
+                {searchOpen ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                )}
+              </button>
+            </div>
           </div>
         </div>
 
-        {listLoading && empty ? (
+        {listLoading && noFoldersAtAll ? (
           <CfLoader inline />
-        ) : empty ? (
-          <p className="cloud-info-empty">No folders yet. Use "+ New Folder" to build a structure, then add documents inside a folder with "+ Document".</p>
-        ) : (
+        ) : noFoldersAtAll ? (
+          <p className="cloud-info-empty">No folders yet. Use "+ New Folder" to build a structure, or upload a folder or files.</p>
+        ) : searching ? (
           <>
-            <div className="reorder-toggle-section doc-toolbar-row">
-              <button
-                className={`btn-reorder-toggle${reorderMode ? ' btn-reorder-toggle-active' : ''}`}
-                onClick={() => { setReorderMode(prev => !prev); setDrag(null); setHint(null); setMoveMode(false); setMoveSel([]); }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><polyline points="10 3 8 6 6 3"/><polyline points="14 21 16 18 18 21"/></svg>
-                {reorderMode ? 'Done Reordering' : 'Reorder Items'}
-              </button>
-              <button
-                className={`btn-reorder-toggle${moveMode ? ' btn-reorder-toggle-active' : ''}`}
-                onClick={toggleMoveMode}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
-                {moveMode ? 'Cancel Move' : 'Move Items'}
-              </button>
-              {reorderMode && (
-                <span className="drag-hint-inline reorder-mode-hint">Drag a row by its handle to reorder it within its own folder.</span>
+            <p className="doc-search-summary">
+              {resultCount} result{resultCount !== 1 ? 's' : ''} for “{urlQ.trim()}” in all folders
+            </p>
+            <div className="doc-tree">
+              {resultFolders.map(folder => renderFolderNode(folder, 0, pathLabel(folder.parentId || '')))}
+              {resultDocs.map(doc => renderDocRow(doc, 0, pathLabel(doc.folderId ? String(doc.folderId) : '')))}
+              {resultCount === 0 && (
+                <div className="doc-tree-empty doc-folder-empty">No folders or files match “{urlQ.trim()}”.</div>
               )}
             </div>
+          </>
+        ) : (
+          <>
+            {reorderMode && (
+              <div className="reorder-toggle-section doc-toolbar-row">
+                <span className="drag-hint-inline reorder-mode-hint">Drag a row by its handle to reorder it within its own folder.</span>
+              </div>
+            )}
 
             {moveMode && (
               <div className="doc-move-bar">
@@ -1392,9 +1508,14 @@ function DocumentsAdmin({ onChanged }) {
               </div>
             )}
             <div className={`doc-tree${reorderMode ? ' doc-tree-reordering' : ''}${moveMode ? ' doc-move-mode' : ''}`}>
-              {newFolderIn === '' && renderNewFolderInput(0)}
+              {newFolderIn === currentDir && renderNewFolderInput(0)}
               {rootFolders.map(folder => renderFolderNode(folder, 0))}
               {rootDocs.map(doc => renderDocRow(doc, 0))}
+              {empty && (
+                <div className="doc-tree-empty doc-folder-empty">
+                  This folder is empty. Use Upload Folder, + New Folder or + Files above.
+                </div>
+              )}
             </div>
           </>
         )}
@@ -1409,18 +1530,25 @@ function DocumentsAdmin({ onChanged }) {
   // we keep showing the file itself and only let the user rename, move or
   // replace it — never a blank rich-text editor.
   const isFileDoc = !!fileUrl && !content && !isSheetDoc;
+  // Save needs something to save: typed content, a chosen file, or an existing file.
+  const canSave = !!(pendingBatch || pendingFile || pendingPreview || sheetEdit || fileUrl || htmlHasContent(editorHtml));
 
   return (
     <div className="cloud-info-admin doc-admin-flow" ref={formTopRef}>
       <div className="cloud-info-sticky-top">
         <div className="cloud-info-header">
           <button className="btn-back" onClick={handleBack}>&larr; Back</button>
-          <h3>{mode === 'create' ? 'Create Document' : `Edit: ${name}`}</h3>
+          <h3>{mode === 'create' ? 'Create Document' : name}</h3>
           <div className="cloud-info-header-actions">
             {!loading && (
               isEditing ? (
                 <>
-                  <button className="btn-save" onClick={handleSave} disabled={saving}>
+                  <button
+                    className="btn-save"
+                    onClick={handleSave}
+                    disabled={saving || !canSave}
+                    title={canSave ? undefined : 'Add some content or a file first'}
+                  >
                     {saving ? (batchProgress ? `Saving ${batchProgress.done}/${batchProgress.total}…` : 'Saving...')
                       : pendingBatch ? `Save All (${pendingBatch.length})` : 'Save'}
                   </button>
@@ -1477,8 +1605,13 @@ function DocumentsAdmin({ onChanged }) {
                   {mode === 'create'
                     ? 'Pick one file to edit it inline, or add several at once (Save All).'
                     : 'Choose a file to replace this document.'}
-                  {' '}DOCX/text open in the editor, spreadsheets in a grid, PDF/images/media preview inline.
                 </small>
+                {/* Which types can be edited here, and which are view-only. */}
+                <div className="doc-type-help">
+                  <div><span className="doc-type-tag is-edit">Editable</span> Word (.docx), text files (.txt, .md, .html, .json, .xml, .yaml, .sql, .log…) and spreadsheets (.xlsx, .xls, .csv, .tsv)</div>
+                  <div><span className="doc-type-tag is-view">View only</span> PDF, images, video and audio — shown as they are; to change one, upload a new version</div>
+                  <div><span className="doc-type-tag is-file">Download only</span> anything else (e.g. .pptx, .doc, .zip) — stored as a file to download</div>
+                </div>
               </div>
             )}
             {isEditing && !pendingPreview && !isFileDoc && !pendingBatch && !sheetEdit && !isSheetDoc && (
@@ -1567,7 +1700,7 @@ function DocumentsAdmin({ onChanged }) {
               downloadUrl={fileUrl}
             />
           ) : isEditing ? (
-            <div ref={editorRef} className="richtext-editor richtext-editor-no-top-radius" contentEditable suppressContentEditableWarning dangerouslySetInnerHTML={{ __html: content }} />
+            <div ref={editorRef} className="richtext-editor richtext-editor-no-top-radius" contentEditable suppressContentEditableWarning dangerouslySetInnerHTML={{ __html: content }} onInput={(e) => setEditorHtml(e.currentTarget.innerHTML)} />
           ) : (
             <div className="cloud-info-preview" dangerouslySetInnerHTML={{ __html: content || '<em>No content yet</em>' }} />
           )}

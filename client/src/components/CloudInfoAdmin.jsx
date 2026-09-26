@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
+import { useUrlParams } from '../useUrlParams';
 
 const MAX_CLOUD_INFO_PAGES = 50;
 const MAX_CLOUD_INFO_IMAGES = 200;
@@ -40,6 +41,13 @@ function CloudInfoAdmin({ onChanged }) {
 
   useEffect(() => { fetchItems(); }, []);
 
+  // Which entry is open lives in the URL: ?item=<slug> to edit it, ?new=1 to create
+  // one. Refresh reopens it, Back/Forward move between list and editor, links work.
+  const [param, setParams] = useUrlParams();
+  const urlItem = param('item');
+  const urlNew = param('new') === '1';
+  const loadedSlugRef = useRef('');
+
   useEffect(() => {
     if ((mode === 'create' || mode === 'edit') && formTopRef.current) {
       formTopRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -67,11 +75,8 @@ function CloudInfoAdmin({ onChanged }) {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleNew = () => {
-    resetForm();
-    setMode('create');
-    setIsEditing(true);
-  };
+  const handleNew = () => setParams({ new: 1, item: '' });
+  const openItem = (item) => setParams({ item: item.slug, new: '' });
 
   const handleEdit = async (item) => {
     setLoading(true);
@@ -87,6 +92,7 @@ function CloudInfoAdmin({ onChanged }) {
       setIsEditing(false);
     } catch (err) {
       showToast(err.message, 'error');
+      setParams({ item: '' }, { replace: true }); // missing or deleted: back to the list
     } finally {
       setLoading(false);
     }
@@ -150,6 +156,10 @@ function CloudInfoAdmin({ onChanged }) {
         setSelectedId(data.item.id || data.item._id);
         setMode('edit');
       }
+      if (data.item && data.item.slug) {
+        loadedSlugRef.current = data.item.slug; // already on screen: no reload
+        setParams({ item: data.item.slug, new: '' }, { replace: true });
+      }
       setIsEditing(false);
       setContent(finalContent);
     } catch (err) {
@@ -170,6 +180,7 @@ function CloudInfoAdmin({ onChanged }) {
       if (selectedId === id) {
         resetForm();
         setMode('list');
+        setParams({ item: '', new: '' }, { replace: true }); // it no longer exists
       }
     } catch (err) {
       showToast(err.message, 'error');
@@ -212,10 +223,23 @@ function CloudInfoAdmin({ onChanged }) {
     );
   };
 
-  const handleBack = () => {
-    resetForm();
-    setMode('list');
-  };
+  const handleBack = () => setParams({ item: '', new: '' });
+
+  // Keep the page in step with the URL (clicks, refresh, Back/Forward, links).
+  useEffect(() => {
+    if (urlNew) {
+      if (mode !== 'create') { loadedSlugRef.current = ''; resetForm(); setMode('create'); setIsEditing(true); }
+      return;
+    }
+    if (urlItem) {
+      if (loadedSlugRef.current === urlItem && mode === 'edit') return;
+      loadedSlugRef.current = urlItem;
+      handleEdit({ slug: urlItem });
+      return;
+    }
+    if (mode !== 'list') { loadedSlugRef.current = ''; resetForm(); setMode('list'); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlItem, urlNew]);
 
   const startEditing = () => {
     setIsEditing(true);
@@ -316,7 +340,7 @@ function CloudInfoAdmin({ onChanged }) {
                 <div key={item._id} className="cloud-info-list-item">
                   <div className="cloud-info-list-name">{item.name}</div>
                   <div className="cloud-info-list-actions">
-                    <button className="btn-edit-sm" onClick={() => handleEdit(item)}>Edit</button>
+                    <button className="btn-edit-sm" onClick={() => openItem(item)}>Edit</button>
                     <button className="btn-delete-inline" onClick={() => { setDeleteInput(''); setDeleteConfirm(item._id); }}>Delete</button>
                   </div>
                 </div>

@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
+import { useUrlParams } from '../useUrlParams';
 import FilePreview, { previewKindOf, TEXT_EXTS } from './FilePreview';
 // The grid editor (and SheetJS) loads only when a spreadsheet is opened; the fallback is the
 // editor's own loading line, so nothing new appears on screen. The ref passes through lazy().
@@ -479,6 +480,21 @@ function DocumentsAdmin({ onChanged }) {
 
   // ---------------- document form ----------------
 
+  // Which document is open lives in the URL: ?item=<slug> to edit it, ?new=1
+  // (&folder=<id>) to create one. Refresh reopens it, Back/Forward move between
+  // the tree and the editor, and a link opens that document directly.
+  const [param, setParams] = useUrlParams();
+  const urlItem = param('item');
+  const urlNew = param('new') === '1';
+  const urlFolder = param('folder');
+  const loadedSlugRef = useRef('');
+  // After a save, point the URL at the saved document (new doc or renamed slug).
+  const showSavedInUrl = (item) => {
+    if (!item || !item.slug) return;
+    loadedSlugRef.current = item.slug; // already on screen: no reload
+    setParams({ item: item.slug, new: '', folder: '' }, { replace: true });
+  };
+
   const resetForm = () => {
     setName('');
     setContent('');
@@ -498,12 +514,8 @@ function DocumentsAdmin({ onChanged }) {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleNew = (folderId = '') => {
-    resetForm();
-    setFormFolderId(folderId || '');
-    setMode('create');
-    setIsEditing(true);
-  };
+  const handleNew = (folderId = '') => setParams({ new: 1, folder: typeof folderId === 'string' ? folderId : '', item: '' });
+  const openDoc = (doc) => setParams({ item: doc.slug, new: '', folder: '' });
 
   const handleEdit = async (item) => {
     setLoading(true);
@@ -530,7 +542,10 @@ function DocumentsAdmin({ onChanged }) {
       setIsEditing(true);
       const html = data.item.content || '';
       if (html) setTimeout(() => { if (editorRef.current) editorRef.current.innerHTML = html; }, 0);
-    } catch (err) { showToast(err.message, 'error'); }
+    } catch (err) {
+      showToast(err.message, 'error');
+      setParams({ item: '' }, { replace: true }); // missing or deleted: back to the tree
+    }
     setLoading(false);
   };
 
@@ -778,6 +793,7 @@ function DocumentsAdmin({ onChanged }) {
       );
       resetForm();
       setMode('list');
+      setParams({ item: '', new: '', folder: '' }, { replace: true });
       setSaving(false);
       return;
     }
@@ -813,6 +829,7 @@ function DocumentsAdmin({ onChanged }) {
         setFormFolderId(data.item.folderId ? String(data.item.folderId) : '');
         snapshotOriginal(data.item);
         setMode('edit');
+        showSavedInUrl(data.item);
         setIsEditing(false);
         if (formFolderId) setExpanded(prev => ({ ...prev, [formFolderId]: true }));
         notifyChanged();
@@ -851,6 +868,7 @@ function DocumentsAdmin({ onChanged }) {
         setFormFolderId(data.item.folderId ? String(data.item.folderId) : '');
         snapshotOriginal(data.item);
         setMode('edit');
+        showSavedInUrl(data.item);
         setIsEditing(false);
         if (formFolderId) setExpanded(prev => ({ ...prev, [formFolderId]: true }));
         notifyChanged();
@@ -883,6 +901,7 @@ function DocumentsAdmin({ onChanged }) {
         setSelectedId(data.item.id || data.item._id);
         setMode('edit');
       }
+      showSavedInUrl(data.item);
       snapshotOriginal(data.item);
       setIsEditing(false);
       setContent(finalContent);
@@ -898,12 +917,28 @@ function DocumentsAdmin({ onChanged }) {
       showToast('Document moved to Trash');
       await fetchItems();
       notifyChanged();
-      if (selectedId === id) { resetForm(); setMode('list'); }
+      if (selectedId === id) { resetForm(); setMode('list'); setParams({ item: '', new: '', folder: '' }, { replace: true }); }
     } catch (err) { showToast(err.message, 'error'); }
     setDeleting(false);
   };
 
-  const handleBack = () => { resetForm(); setMode('list'); };
+  const handleBack = () => setParams({ item: '', new: '', folder: '' });
+
+  // Keep the page in step with the URL (clicks, refresh, Back/Forward, links).
+  useEffect(() => {
+    if (urlNew) {
+      if (mode !== 'create') { loadedSlugRef.current = ''; resetForm(); setFormFolderId(urlFolder); setMode('create'); setIsEditing(true); }
+      return;
+    }
+    if (urlItem) {
+      if (loadedSlugRef.current === urlItem && mode === 'edit') return;
+      loadedSlugRef.current = urlItem;
+      handleEdit({ slug: urlItem });
+      return;
+    }
+    if (mode !== 'list') { loadedSlugRef.current = ''; resetForm(); setMode('list'); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlItem, urlNew, urlFolder]);
   const startEditing = () => {
     // A spreadsheet always edits through the grid: make sure it's wired up.
     if (isSheetDoc && !sheetEdit) {
@@ -974,7 +1009,7 @@ function DocumentsAdmin({ onChanged }) {
             <span className="doc-tree-name">{doc.name}</span>
           </div>
           <div className="doc-tree-actions">
-            <button className="btn-edit-sm" onClick={() => handleEdit(doc)}>Edit</button>
+            <button className="btn-edit-sm" onClick={() => openDoc(doc)}>Edit</button>
             <button className="btn-delete-inline" onClick={() => { setFolderDeleteConfirm(null); setDeleteInput(''); setDeleteConfirm(doc._id); }}>Delete</button>
           </div>
         </div>

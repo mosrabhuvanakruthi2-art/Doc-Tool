@@ -15,15 +15,25 @@ const VALID_TABS = ['add', 'edit', 'compatibility', 'cloudinfo', 'documents', 's
 function AdminPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabFromUrl = searchParams.get('tab');
-  // "Features" is one tab: Edit Feature by default, Add Feature from its button.
-  // The URL keeps tab=edit / tab=add, so existing links still open the right view.
-  const [activeTab, setActiveTab] = useState(VALID_TABS.includes(tabFromUrl) ? tabFromUrl : 'edit');
+  // The URL is the source of truth, so Back/Forward switch tabs and a refresh
+  // stays on the same tab. "Features" is one tab: Edit Feature by default, Add
+  // Feature from its button (tab=edit / tab=add).
+  const activeTab = VALID_TABS.includes(tabFromUrl) ? tabFromUrl : 'edit';
   const [refreshKey, setRefreshKey] = useState(0);
   const isFeatures = activeTab === 'edit' || activeTab === 'add';
 
+  // A new tab starts clean (its own params only). Edit <-> Add keeps the chosen
+  // product type / scope / combination so the other view opens on the same one.
   const handleTabChange = (tab) => {
-    setActiveTab(tab);
-    setSearchParams({ tab });
+    if (tab === activeTab) return;
+    const next = new URLSearchParams({ tab });
+    if ((tab === 'edit' || tab === 'add') && isFeatures) {
+      ['product', 'scope', 'combination'].forEach((k) => {
+        const v = searchParams.get(k);
+        if (v) next.set(k, v);
+      });
+    }
+    setSearchParams(next);
   };
 
   const handleSaved = () => {

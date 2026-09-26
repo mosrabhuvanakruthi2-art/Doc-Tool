@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import CfLoader from './CfLoader';
+import { useUrlParams } from '../useUrlParams';
 
 // Admin view of who did what, and when. Everything the server records — sign-ins,
 // access requests and their decisions, user administration, content edits, uploads,
@@ -81,9 +82,13 @@ function relative(value) {
 function AuditLog() {
   const token = localStorage.getItem('docs_token') || '';
 
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [applied, setApplied] = useState(EMPTY_FILTERS);
-  const [page, setPage] = useState(1);
+  // Applied filters and the page live in the URL (?q=&action=&outcome=&from=&to=&page=),
+  // so a refresh or a shared link shows the same slice of the log.
+  const [param, setParams] = useUrlParams();
+  const filtersFromUrl = () => ({ q: param('q'), action: param('action'), outcome: param('outcome'), from: param('from'), to: param('to') });
+  const [filters, setFilters] = useState(filtersFromUrl);
+  const [applied, setApplied] = useState(filtersFromUrl);
+  const [page, setPage] = useState(() => Math.max(1, parseInt(param('page'), 10) || 1));
   const [limit, setLimit] = useState(50);
 
   const [data, setData] = useState({ logs: [], total: 0, pages: 1 });
@@ -134,10 +139,23 @@ function AuditLog() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setApplied(prev => (JSON.stringify(prev) === JSON.stringify(filters) ? prev : filters));
-      setPage(1);
     }, 300);
     return () => clearTimeout(timer);
   }, [filters]);
+
+  // New filters start again at page 1 — but only on a real change, so opening a
+  // link to page 3 of a filtered view stays on page 3.
+  const appliedMounted = useRef(false);
+  useEffect(() => {
+    if (!appliedMounted.current) { appliedMounted.current = true; return; }
+    setPage(1);
+  }, [applied]);
+
+  // Mirror the applied filters and page into the URL, in place (no history entry).
+  useEffect(() => {
+    setParams({ ...applied, page: page > 1 ? page : '' }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applied, page]);
 
   // Quick range buttons — the common questions are "today" and "this week".
   const quickRange = (days) => {

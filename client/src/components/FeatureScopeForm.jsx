@@ -3,6 +3,7 @@ import FeatureCard from './FeatureCard';
 import { useProductConfig } from '../ProductConfigContext';
 import CustomSelect from './CustomSelect';
 import { showToast } from './Toast';
+import { useUrlParams } from '../useUrlParams';
 
 const DUPLICATE_FEATURE_NAME_MSG = 'This feature already exists. Enter a different name.';
 
@@ -18,9 +19,12 @@ const emptyFeature = () => ({
 function FeatureScopeForm({ onSaved }) {
   const { productTypes, combinationsByProduct, configs, refresh } = useProductConfig();
 
-  const [productType, setProductType] = useState('');
-  const [scope, setScope] = useState('');
-  const [combination, setCombination] = useState('');
+  // Product type / scope / combination live in the URL, like Edit Feature, so a
+  // refresh keeps the selection and Edit <-> Add opens on the same combination.
+  const [param, setParams] = useUrlParams();
+  const productType = param('product');
+  const scope = ['inscope', 'outscope'].includes(param('scope')) ? param('scope') : '';
+  const combination = param('combination');
   const [features, setFeatures] = useState([emptyFeature()]);
   const [saving, setSaving] = useState(false);
 
@@ -158,7 +162,7 @@ function FeatureScopeForm({ onSaved }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       await refresh();
-      setProductType(newPTName.trim());
+      setParams({ product: newPTName.trim(), scope: '', combination: '' });
       showToast(`Product type "${newPTName.trim()}" created!`);
       cancelNewPT();
     } catch (err) {
@@ -181,7 +185,7 @@ function FeatureScopeForm({ onSaved }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       await refresh();
-      setCombination(newComboName.trim());
+      setParams({ combination: newComboName.trim() });
       showToast(`Combination "${newComboName.trim()}" created!`);
       cancelNewCombo();
     } catch (err) {
@@ -245,9 +249,7 @@ function FeatureScopeForm({ onSaved }) {
   };
 
   const resetForm = () => {
-    setProductType('');
-    setScope('');
-    setCombination('');
+    setParams({ product: '', scope: '', combination: '' }, { replace: true });
     setFeatures([emptyFeature()]);
     cancelNewPT();
     cancelNewCombo();
@@ -264,7 +266,7 @@ function FeatureScopeForm({ onSaved }) {
           <div className="select-with-action">
             <CustomSelect
               value={productType}
-              onChange={(e) => { setProductType(e.target.value); setScope(''); setCombination(''); cancelNewPT(); }}
+              onChange={(e) => { setParams({ product: e.target.value, scope: '', combination: '' }); cancelNewPT(); }}
               options={productTypes.map(pt => ({ value: pt, label: pt }))}
               placeholder="-- Select Product Type --"
             />
@@ -303,7 +305,7 @@ function FeatureScopeForm({ onSaved }) {
             <label>Scope Status <span className="required">*</span></label>
             <CustomSelect
               value={scope}
-              onChange={(e) => { setScope(e.target.value); setCombination(''); }}
+              onChange={(e) => { setParams({ scope: e.target.value, combination: '' }); }}
               options={[
                 { value: 'inscope', label: 'In Scope' },
                 { value: 'outscope', label: 'Out of Scope' },
@@ -322,7 +324,7 @@ function FeatureScopeForm({ onSaved }) {
             <div className="select-with-action">
               <CustomSelect
                 value={combination}
-                onChange={(e) => { setCombination(e.target.value); cancelNewCombo(); }}
+                onChange={(e) => { setParams({ combination: e.target.value }); cancelNewCombo(); }}
                 options={combinations.map(c => ({ value: c, label: c }))}
                 placeholder="-- Select Combination --"
               />

@@ -4,6 +4,7 @@ const loadXlsx = () => import('xlsx');
 import CustomSelect from './CustomSelect';
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
+import { useUrlParams } from '../useUrlParams';
 
 const COMPAT_MATRICES_CHANGED = 'docproject:compat-matrices-changed';
 
@@ -36,6 +37,14 @@ function CompatibilityAdmin({ onChanged }) {
   const editorRef = useRef(null);
   const matrixDragItem = useRef(null);
   const matrixDragOver = useRef(null);
+
+  // Which matrix is open lives in the URL: ?matrix=<slug> to edit it, ?new=1 to
+  // create one. Refresh reopens it, Back/Forward move between list and editor,
+  // and a link opens that matrix directly. The page follows the URL (below).
+  const [param, setParams] = useUrlParams();
+  const urlMatrix = param('matrix');
+  const urlNew = param('new') === '1';
+  const loadedSlugRef = useRef('');
 
   useEffect(() => {
     fetchMatrices();
@@ -92,10 +101,35 @@ function CompatibilityAdmin({ onChanged }) {
     setDeleteConfirm(false);
   };
 
-  const startNew = () => {
-    resetForm();
-    setMode('create');
+  // Opening the editor is a navigation: change the URL and let the sync below act.
+  const startNew = () => setParams({ new: 1, matrix: '' });
+  const openMatrix = (id) => {
+    const m = matrices.find((x) => x._id === id);
+    if (m) setParams({ matrix: m.slug, new: '' });
   };
+  const backToList = () => setParams({ matrix: '', new: '' });
+
+  // Keep the page in step with the URL (clicks, refresh, Back/Forward, links).
+  useEffect(() => {
+    if (urlNew) {
+      if (mode !== 'create') { loadedSlugRef.current = ''; resetForm(); setMode('create'); }
+      return;
+    }
+    if (urlMatrix) {
+      if (listLoading) return; // the list is needed to find the matrix
+      if (loadedSlugRef.current === urlMatrix && mode === 'edit') return;
+      if (!matrices.some((m) => m.slug === urlMatrix || m._id === urlMatrix)) {
+        showToast('That matrix no longer exists.', 'error');
+        setParams({ matrix: '' }, { replace: true });
+        return;
+      }
+      loadedSlugRef.current = urlMatrix;
+      loadMatrix(urlMatrix);
+      return;
+    }
+    if (mode !== 'select') { loadedSlugRef.current = ''; resetForm(); setMode('select'); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlMatrix, urlNew, listLoading, matrices]);
 
   const addColumn = () => {
     setColumns(prev => [...prev, '']);
@@ -271,6 +305,7 @@ function CompatibilityAdmin({ onChanged }) {
       if (onChanged) onChanged();
       resetForm();
       setMode('select');
+      setParams({ matrix: '', new: '' }, { replace: true }); // back to the list
       showToast(msg);
     } catch (err) {
       showToast('Save failed: ' + err.message, 'error');
@@ -318,6 +353,7 @@ function CompatibilityAdmin({ onChanged }) {
       notifyCompatMatricesChanged();
       resetForm();
       setMode('select');
+      setParams({ matrix: '', new: '' }, { replace: true }); // it no longer exists
       if (onChanged) onChanged();
     } catch (err) {
       showToast('Delete failed: ' + err.message, 'error');
@@ -376,7 +412,7 @@ function CompatibilityAdmin({ onChanged }) {
                 <label>Select an existing matrix to edit</label>
                 <CustomSelect
                   value=""
-                  onChange={(e) => { if (e.target.value) loadMatrix(e.target.value); }}
+                  onChange={(e) => { if (e.target.value) openMatrix(e.target.value); }}
                   options={matrices.map(m => ({ value: m._id, label: m.name }))}
                   placeholder="-- Select Matrix --"
                 />
@@ -422,7 +458,7 @@ function CompatibilityAdmin({ onChanged }) {
       {(mode === 'create' || mode === 'edit') && (
         <div ref={editorRef}>
           <div className="compat-admin-toolbar">
-            <button className="btn-secondary" onClick={() => { resetForm(); setMode('select'); }}>
+            <button className="btn-secondary" onClick={backToList}>
               Back to List
             </button>
             <button

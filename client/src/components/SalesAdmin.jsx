@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { useProductConfig } from '../ProductConfigContext';
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
+import { useUrlParams } from '../useUrlParams';
 
 // Admin control for what appears on the /sales page. Same layout as the sales
 // page (product tabs -> combination -> What Migrates / Limitations), but every
@@ -26,11 +27,14 @@ function groupByFamily(feats) {
 
 export default function SalesAdmin() {
   const { productTypes, combinationsByProduct } = useProductConfig();
-  const [product, setProduct] = useState('');
-  const [combo, setCombo] = useState('');
+  // Product type, combination and What Migrates / Limitations live in the URL
+  // (?product=&combination=&view=limits), so refresh and Back/Forward keep them.
+  const [param, setParams] = useUrlParams();
+  const product = param('product') || productTypes[0] || '';
+  const combo = param('combination');
   const [features, setFeatures] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [view, setView] = useState('migrates');
+  const view = param('view') === 'limits' ? 'limits' : 'migrates';
   const [query, setQuery] = useState('');
   const [savingIds, setSavingIds] = useState(() => new Set());
 
@@ -62,9 +66,7 @@ export default function SalesAdmin() {
   // Jump to a combination, switching product type if needed.
   const openFound = (hit) => {
     if (!hit) return;
-    setProduct(hit.pt);
-    setCombo(hit.name);
-    setView('migrates');
+    setParams({ product: hit.pt, combination: hit.name, view: '' });
     setQuery('');
     setComboQuery('');
     setFinderOpen(false);
@@ -77,10 +79,7 @@ export default function SalesAdmin() {
     else if (e.key === 'Escape') { setFinderOpen(false); }
   };
 
-  // Default the selected product once the config loads.
-  useEffect(() => {
-    if (!product && productTypes.length) setProduct(productTypes[0]);
-  }, [productTypes, product]);
+  // No product in the URL means the first product type (not written to the URL).
 
   // Load every feature for the product (no sales filter — admin sees them all).
   useEffect(() => {
@@ -95,7 +94,7 @@ export default function SalesAdmin() {
     return () => { cancelled = true; };
   }, [product]);
 
-  const selectProduct = (pt) => { setProduct(pt); setCombo(''); setView('migrates'); setQuery(''); };
+  const selectProduct = (pt) => { setParams({ product: pt, combination: '', view: '' }); setQuery(''); };
 
   const combos = useMemo(() => {
     const ordered = combinationsByProduct[product] || [];
@@ -210,7 +209,7 @@ export default function SalesAdmin() {
               <button
                 key={c.name}
                 className={`sales-combo${c.name === activeCombo ? ' active' : ''}`}
-                onClick={() => { setCombo(c.name); setView('migrates'); setQuery(''); }}
+                onClick={() => { setParams({ product, combination: c.name, view: '' }); setQuery(''); }}
               >
                 <span className="sales-combo-name">{toArrow(c.name)}</span>
                 <span className="sales-combo-count" title={`${c.shown} of ${c.total} shown on sales`}>{c.shown}/{c.total}</span>
@@ -239,10 +238,10 @@ export default function SalesAdmin() {
 
               <div className="sales-admin-controls">
                 <div className="sales-toggle">
-                  <button className={`sales-toggle-btn is-good${view === 'migrates' ? ' active' : ''}`} onClick={() => { setView('migrates'); setQuery(''); }}>
+                  <button className={`sales-toggle-btn is-good${view === 'migrates' ? ' active' : ''}`} onClick={() => { setParams({ view: '' }); setQuery(''); }}>
                     What Migrates <span className="sales-toggle-count">{migrates.filter((f) => f.showInSales).length}/{migrates.length}</span>
                   </button>
-                  <button className={`sales-toggle-btn is-warn${view === 'limits' ? ' active' : ''}`} onClick={() => { setView('limits'); setQuery(''); }}>
+                  <button className={`sales-toggle-btn is-warn${view === 'limits' ? ' active' : ''}`} onClick={() => { setParams({ view: 'limits' }); setQuery(''); }}>
                     Limitations <span className="sales-toggle-count">{limits.filter((f) => f.showInSales).length}/{limits.length}</span>
                   </button>
                 </div>

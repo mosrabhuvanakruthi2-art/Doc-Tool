@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
+import { useUrlParams } from '../useUrlParams';
 
 const PERM_KEYS = [
   { key: 'productTypes', label: 'Product Types' },
@@ -18,7 +19,14 @@ function UserAdmin() {
   const [form, setForm] = useState({ email: '', password: '', name: '', role: 'viewer', permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true }, documentFolders: [], documentAccess: [] });
   const [folders, setFolders] = useState([]);
   const [documents, setDocuments] = useState([]);
-  const [search, setSearch] = useState('');
+  // The open user (?user=<id>), the new-user form (?new=1) and the search (?q=)
+  // live in the URL, so refresh and Back/Forward keep them and links work.
+  const [param, setParams] = useUrlParams();
+  const urlUser = param('user');
+  const urlNew = param('new') === '1';
+  const search = param('q');
+  // Typing updates the URL in place (no history entry per keystroke).
+  const setSearch = (v) => setParams({ q: v }, { replace: true });
   const [bulkBusy, setBulkBusy] = useState('');
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -120,11 +128,32 @@ function UserAdmin() {
 
   useEffect(() => { fetchUsers(); fetchAccessRequests(); }, []);
 
-  const resetForm = () => {
+  // Keep the page in step with the URL (clicks, refresh, Back/Forward, links).
+  useEffect(() => {
+    if (urlNew) {
+      if (mode !== 'create') { clearForm(); setMode('create'); }
+      return;
+    }
+    if (urlUser) {
+      if (loading) return; // the list is needed to find the user
+      if (mode === 'edit' && editingUser && String(editingUser.id || editingUser._id) === urlUser) return;
+      const u = users.find((x) => String(x.id || x._id) === urlUser);
+      if (!u) { showToast('That user no longer exists.', 'error'); setParams({ user: '' }, { replace: true }); return; }
+      handleEdit(u);
+      return;
+    }
+    if (mode !== 'list') { clearForm(); setMode('list'); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlUser, urlNew, loading, users]);
+
+  const clearForm = () => {
     setForm({ email: '', password: '', name: '', role: 'viewer', permissions: { productTypes: true, compatibility: true, cloudInfo: true, documents: true }, documentFolders: [], documentAccess: [] });
     setEditingUser(null);
-    setMode('list');
   };
+  const resetForm = () => { clearForm(); setMode('list'); };
+  // Opening / leaving the editor is a navigation: change the URL, the sync acts.
+  const backToList = () => setParams({ user: '', new: '' });
+  const openUser = (u) => setParams({ user: String(u.id || u._id), new: '' });
 
   // Folder paths read "Guides / Migration", so a subfolder grant is legible
   // without having to picture the tree.
@@ -216,6 +245,7 @@ function UserAdmin() {
       }
       await fetchUsers();
       resetForm();
+      setParams({ user: '', new: '' }, { replace: true }); // back to the list
     } catch (err) {
       showToast(err.message, 'error');
     }
@@ -424,7 +454,7 @@ function UserAdmin() {
         {/* Users Section */}
         <div className="user-admin-header">
           <h3>User Management</h3>
-          <button className="btn-save" onClick={() => { resetForm(); setMode('create'); }}>+ New User</button>
+          <button className="btn-save" onClick={() => setParams({ new: 1, user: '' })}>+ New User</button>
         </div>
         {loading ? <CfLoader inline /> : shownUsers.length === 0 ? (
           <p className="user-admin-empty">
@@ -484,7 +514,7 @@ function UserAdmin() {
                       </button>
                     </td>
                     <td className="user-actions-cell">
-                      <button className="btn-edit-sm" onClick={() => handleEdit(u)}>Edit</button>
+                      <button className="btn-edit-sm" onClick={() => openUser(u)}>Edit</button>
                       {deleteConfirm === (u.id || u._id) ? (
                         <span className="delete-inline">
                           <button className="btn-yes" onClick={() => handleDelete(u.id || u._id, u.email)}>Yes</button>
@@ -508,7 +538,7 @@ function UserAdmin() {
   return (
     <div className="user-admin">
       <div className="user-admin-header">
-        <button className="btn-back" onClick={resetForm}>&larr; Back</button>
+        <button className="btn-back" onClick={backToList}>&larr; Back</button>
         <h3>{mode === 'create' ? 'Create User' : `Edit: ${editingUser?.email}`}</h3>
       </div>
 
@@ -598,7 +628,7 @@ function UserAdmin() {
         )}
         <div className="form-actions">
           <button className="btn-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-          <button className="btn-cancel" onClick={resetForm}>Cancel</button>
+          <button className="btn-cancel" onClick={backToList}>Cancel</button>
         </div>
       </div>
     </div>

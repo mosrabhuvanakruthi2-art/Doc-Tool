@@ -4,6 +4,7 @@ import { useProductConfig } from '../ProductConfigContext';
 import CustomSelect from './CustomSelect';
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
+import { useUrlParams } from '../useUrlParams';
 
 function getEditCacheKey(productType, scope, combination) {
   return `edit_cache_${productType}_${scope}_${combination}`;
@@ -106,11 +107,14 @@ function MoveButtons({ index, total, onMove, disabled }) {
 }
 
 function EditFeatureTab({ refreshKey, onChanged }) {
-  const { productTypes, combinationsByProduct, configs, refresh } = useProductConfig();
+  const { productTypes, combinationsByProduct, configs, refresh, ready: configReady } = useProductConfig();
 
-  const [productType, setProductType] = useState('');
-  const [scope, setScope] = useState('');
-  const [combination, setCombination] = useState('');
+  // Product type / scope / combination live in the URL (?product=&scope=&combination=)
+  // so refresh keeps them, Back/Forward step through them, and links can be shared.
+  const [param, setParams] = useUrlParams();
+  const productType = param('product');
+  const scope = ['inscope', 'outscope'].includes(param('scope')) ? param('scope') : '';
+  const combination = param('combination');
   const [features, setFeatures] = useState([]);
   const [originalFeatures, setOriginalFeatures] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -147,6 +151,19 @@ function EditFeatureTab({ refreshKey, onChanged }) {
 
   const combinations = productType ? (combinationsByProduct[productType] || []) : [];
   const readyToFetch = productType && scope && (combinations.length === 0 || combination);
+
+  // A link to a product type or combination that no longer exists (deleted or
+  // renamed) falls back to the nearest valid level — judged only against a product
+  // list that actually loaded, so a refresh never clears a valid selection.
+  useEffect(() => {
+    if (!configReady) return;
+    if (productType && !productTypes.includes(productType)) {
+      setParams({ product: '', scope: '', combination: '' }, { replace: true });
+    } else if (combination && !combinations.includes(combination)) {
+      setParams({ combination: '' }, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configReady, productType, combination, productTypes, combinationsByProduct]);
 
   useEffect(() => {
     if (productType && scopeSectionRef.current) {
@@ -375,9 +392,8 @@ function EditFeatureTab({ refreshKey, onChanged }) {
       if (!res.ok) throw new Error(data.error || 'Delete failed');
       setFeatures([]);
       setOriginalFeatures([]);
-      setProductType('');
-      setScope('');
-      setCombination('');
+      // The product type no longer exists: replace (not add) the history entry.
+      setParams({ product: '', scope: '', combination: '' }, { replace: true });
       setDeletePTModal(false);
       setDeletePTInput('');
       setDeletePTConfirm(false);
@@ -408,7 +424,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
       if (!res.ok) throw new Error(data.error || 'Delete failed');
       setFeatures([]);
       setOriginalFeatures([]);
-      setCombination('');
+      setParams({ combination: '' }, { replace: true }); // the combination is gone
       setDeleteComboAllConfirm(false);
       setDeleteInput('');
       setShowComboRename(false);
@@ -448,7 +464,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Rename failed');
       await refresh();
-      setCombination(newName);
+      setParams({ combination: newName }, { replace: true }); // same page, new name
       setShowComboRename(false);
       setComboRenameDraft('');
       showToast(`Combination renamed to "${newName}".`);
@@ -591,7 +607,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
           <div className="select-with-action">
             <CustomSelect
               value={productType}
-              onChange={(e) => { setProductType(e.target.value); setScope(''); setCombination(''); setDeletePTConfirm(false); }}
+              onChange={(e) => { setParams({ product: e.target.value, scope: '', combination: '' }); setDeletePTConfirm(false); }}
               options={productTypes.map(pt => ({ value: pt, label: pt }))}
               placeholder="-- Select Product Type --"
             />
@@ -663,7 +679,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
             <label>Scope Status <span className="required">*</span></label>
             <CustomSelect
               value={scope}
-              onChange={(e) => { setScope(e.target.value); setCombination(''); }}
+              onChange={(e) => { setParams({ scope: e.target.value, combination: '' }); }}
               options={[
                 { value: 'inscope', label: 'In Scope' },
                 { value: 'outscope', label: 'Out of Scope' },
@@ -683,7 +699,7 @@ function EditFeatureTab({ refreshKey, onChanged }) {
               <CustomSelect
                 value={combination}
                 onChange={(e) => {
-                  setCombination(e.target.value);
+                  setParams({ combination: e.target.value });
                   setDeleteComboAllConfirm(false);
                   setShowComboRename(false);
                   setComboRenameDraft('');

@@ -5,7 +5,7 @@ import { useContentChanged } from './liveUpdates';
 const ProductConfigContext = createContext(null);
 
 // Session tokens whose change means the product config must be re-read.
-const TOKEN_KEYS = ['docs_token', 'admin_token'];
+const TOKEN_KEYS = ['docs_token'];
 
 export function ProductConfigProvider({ children }) {
   const [productTypes, setProductTypes] = useState([]);

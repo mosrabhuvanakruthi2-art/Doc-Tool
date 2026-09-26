@@ -9,6 +9,10 @@ export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
   const [token, setToken] = useState(localStorage.getItem('docs_token') || '');
   const [loading, setLoading] = useState(true);
   const [redirectError, setRedirectError] = useState(msRedirectError || null);
+  // True right after a Microsoft sign-in completes in this page load, so the app
+  // can send an admin straight to the admin panel (and only on sign-in — an admin
+  // who later opens the docs site is left there).
+  const [justSignedIn, setJustSignedIn] = useState(!!msRedirectToken);
 
   const verify = useCallback(async (t) => {
     if (!t) { setUser(null); setLoading(false); return; }
@@ -42,36 +46,8 @@ export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
     }
   }, []);
 
-  const login = async (email, password) => {
-    const res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Login failed');
-    localStorage.setItem('docs_token', data.token);
-    notifyAuthChanged();
-    setToken(data.token);
-    setUser(data.user);
-    return data.user;
-  };
-
-  const loginWithMicrosoft = async (accessToken) => {
-    const res = await fetch('/api/auth/microsoft', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accessToken }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Microsoft login failed');
-    localStorage.setItem('docs_token', data.token);
-    notifyAuthChanged();
-    setToken(data.token);
-    setUser(data.user);
-    return data.user;
-  };
-
+  // Sign-in is Microsoft only (the redirect flow handled in main.jsx); there is
+  // no password login.
   const logout = () => {
     reportLogout('docs'); // must run before the token is cleared
     localStorage.removeItem('docs_token');
@@ -87,7 +63,7 @@ export function AuthProvider({ children, msRedirectToken, msRedirectError }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, loginWithMicrosoft, logout, hasPermission, redirectError, clearRedirectError: () => setRedirectError(null) }}>
+    <AuthContext.Provider value={{ user, token, loading, logout, hasPermission, redirectError, clearRedirectError: () => setRedirectError(null), justSignedIn, clearJustSignedIn: () => setJustSignedIn(false) }}>
       {children}
     </AuthContext.Provider>
   );

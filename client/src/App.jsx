@@ -1,7 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
-import { reportLogout } from './reportDownload';
-import { notifyAuthChanged } from './authEvents';
-import { Routes, Route, useSearchParams, useLocation } from 'react-router-dom';
+import { Routes, Route, useSearchParams, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { useLiveUpdates } from './liveUpdates';
 import { startMicrosoftLogin } from './msalOauth';
 import Header from './components/Header';
@@ -12,7 +10,6 @@ const CloudInfoPage = lazy(() => import('./components/CloudInfoPage'));
 const DocumentPage = lazy(() => import('./components/DocumentPage'));
 const AdminPage = lazy(() => import('./components/AdminPage'));
 const SalesPage = lazy(() => import('./components/SalesPage'));
-import AdminLogin from './components/AdminLogin';
 import ToastContainer from './components/Toast';
 import CfLoader from './components/CfLoader';
 import { useAuth } from './AuthContext';
@@ -69,35 +66,17 @@ function DocsLogin() {
   );
 }
 
+// The admin panel uses the same Microsoft sign-in as the docs site. Admin status
+// comes from the user's database record (fresh from /api/auth/verify on every
+// load), and the server re-checks it on every admin API call as well.
 function AdminRoute({ darkMode, setDarkMode }) {
-  const [token, setToken] = useState(localStorage.getItem('admin_token') || '');
-  const [verified, setVerified] = useState(false);
-  const [checking, setChecking] = useState(true);
-  useEffect(() => {
-    if (!token) { setChecking(false); setVerified(false); return; }
-    fetch('/api/admin/verify', { headers: { Authorization: 'Bearer ' + token } })
-      .then((res) => {
-        if (res.ok) { setVerified(true); }
-        else { localStorage.removeItem('admin_token'); notifyAuthChanged(); setToken(''); setVerified(false); }
-      })
-      .catch(() => { setVerified(false); })
-      .finally(() => setChecking(false));
-  }, [token]);
-
-  const handleLogout = () => { reportLogout('admin'); localStorage.removeItem('admin_token'); notifyAuthChanged(); setToken(''); setVerified(false); };
-
-  if (checking) {
-    return (
-      <div className="admin-login-page">
-        <div className="admin-login-card" style={{ textAlign: 'center', padding: 48 }}>Verifying session...</div>
-      </div>
-    );
-  }
-  if (!verified) return <AdminLogin onLogin={(t) => setToken(t)} />;
+  const { user, logout } = useAuth();
+  if (!user) return <DocsLogin />;                         // not signed in: Microsoft sign-in
+  if (user.role !== 'admin') return <Navigate to="/" replace />; // signed in, not an admin: docs site
 
   return (
     <>
-      <Header darkMode={darkMode} onToggleDark={() => setDarkMode(!darkMode)} isAdmin={true} onLogout={handleLogout} />
+      <Header darkMode={darkMode} onToggleDark={() => setDarkMode(!darkMode)} isAdmin={true} onLogout={logout} user={user} />
       <div className="app-body">
         <Suspense fallback={<CfLoader />}><AdminPage /></Suspense>
       </div>
@@ -124,8 +103,18 @@ function MainContent() {
 
 function App() {
   const [darkMode, setDarkMode] = useState(false);
-  const { user, loading: authLoading, logout } = useAuth();
+  const { user, loading: authLoading, logout, justSignedIn, clearJustSignedIn } = useAuth();
   const { pathname } = useLocation();
+  const navigate = useNavigate();
+
+  // Right after a Microsoft sign-in, an admin goes straight to the admin panel;
+  // everyone else stays on the docs site. Only on sign-in, so an admin can still
+  // open and browse the docs site afterwards.
+  useEffect(() => {
+    if (!justSignedIn || authLoading) return;
+    clearJustSignedIn();
+    if (user && user.role === 'admin' && !pathname.startsWith('/admin')) navigate('/admin', { replace: true });
+  }, [justSignedIn, authLoading, user, pathname, navigate, clearJustSignedIn]);
 
   // Signed-in readers get admin changes pushed live. The admin panel does not
   // subscribe, so a background refresh can never disturb an edit in progress.

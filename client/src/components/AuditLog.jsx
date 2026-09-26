@@ -79,7 +79,7 @@ function relative(value) {
 }
 
 function AuditLog() {
-  const token = localStorage.getItem('admin_token') || '';
+  const token = localStorage.getItem('docs_token') || '';
 
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [applied, setApplied] = useState(EMPTY_FILTERS);

@@ -10,7 +10,7 @@ const PERM_KEYS = [
 ];
 
 function UserAdmin() {
-  const token = localStorage.getItem('admin_token') || '';
+  const token = localStorage.getItem('docs_token') || '';
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState('list');
@@ -192,7 +192,7 @@ function UserAdmin() {
 
   const handleSave = async () => {
     if (!form.email.trim()) { showToast('Email is required', 'error'); return; }
-    if (mode === 'create' && !form.password) { showToast('Password is required', 'error'); return; }
+    // No password: everyone signs in with Microsoft; the role decides admin access.
     setSaving(true);
     try {
       const body = {
@@ -204,13 +204,11 @@ function UserAdmin() {
       };
       if (mode === 'create') {
         body.email = form.email.trim();
-        body.password = form.password;
         const res = await fetch('/api/users', { method: 'POST', headers, body: JSON.stringify(body) });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
         showToast('User created successfully!');
       } else {
-        if (form.password) body.password = form.password;
         const res = await fetch(`/api/users/${editingUser.id || editingUser._id}`, { method: 'PUT', headers, body: JSON.stringify(body) });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
@@ -518,10 +516,6 @@ function UserAdmin() {
         <div className="form-group">
           <label>Email <span className="required">*</span></label>
           <input type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} disabled={mode === 'edit'} placeholder="user@company.com" />
-        </div>
-        <div className="form-group">
-          <label>{mode === 'create' ? 'Password' : 'New Password (leave blank to keep current)'} {mode === 'create' && <span className="required">*</span>}</label>
-          <input type="password" value={form.password} onChange={e => setForm(p => ({ ...p, password: e.target.value }))} placeholder={mode === 'create' ? 'Enter password' : 'Leave blank to keep current'} />
         </div>
         <div className="form-group">
           <label>Name</label>

@@ -66,8 +66,6 @@ if (process.env.RUNNING_IN_DOCKER === '1'
 // Not fatal — the app runs without them — but each one silently disables a
 // feature, so say so once at boot instead of failing mysteriously later.
 for (const [key, effect] of [
-  ['ADMIN_EMAIL', 'local admin login is disabled'],
-  ['ADMIN_PASSWORD', 'local admin login is disabled'],
   ['FRONTEND_URL', "CORS falls back to http://localhost:4002 and will block your real domain"],
   ['AZURE_CLIENT_ID', 'Microsoft sign-in is disabled'],
 ]) {
@@ -143,8 +141,7 @@ app.use('/api/', (req, res, next) => {
 // requireAuth/requireAdmin checks remain as defense-in-depth.
 const PUBLIC_API = [
   /^\/api\/health$/,          // liveness probe
-  /^\/api\/auth\//,           // login, verify, microsoft exchange, logout
-  /^\/api\/admin\/login$/,    // admin password login
+  /^\/api\/auth\//,           // verify, microsoft exchange
   /^\/api\/client-errors$/,   // browser error reports may fire before login
   /^\/api\/internal\//,       // machine API — has its OWN auth (requireInternalKey: X-Internal-Key + origin/IP allowlist)
   /^\/api\/doc-file\//,       // document file bytes — auth is the signed ?ft= token, re-checked + access re-verified in the handler
@@ -167,8 +164,9 @@ app.get('/api/live', (req, res) => liveUpdates.attach(req, res));
 
 // --------------- Auth ---------------
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+// Sign-in is Microsoft only, and whether someone is an admin is decided solely by
+// their user record in the database (role: 'admin'). There is no password login
+// and no admin configured through environment variables.
 const JWT_SECRET = process.env.JWT_SECRET;
 
 const FULL_PERMISSIONS = { productTypes: true, compatibility: true, cloudInfo: true, documents: true };
@@ -237,14 +235,11 @@ function requireAuth(req, res, next) {
 
 // Authorization for content editing. The token proves identity, but the role is
 // re-read from the database so a promotion or demotion takes effect on the next
-// request rather than whenever the 8-hour token happens to expire. The
-// environment admin has no DB row and is trusted from the token.
+// request rather than whenever the token happens to expire.
 async function requireAdmin(req, res, next) {
   const decoded = decodeToken(req);
   if (!decoded) return res.status(401).json({ error: 'Authentication required' });
   const email = String(decoded.email || '').toLowerCase().trim();
-  const isEnvAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase().trim();
-  if (isEnvAdmin) { req.user = decoded; return next(); }
   try {
     const user = await User.findOne({ email }).select('role isActive').lean();
     if (!user || user.isActive === false || user.role !== 'admin') {
@@ -257,122 +252,26 @@ async function requireAdmin(req, res, next) {
   next();
 }
 
-app.post('/api/auth/login', authLimiter, async (req, res) => {
-  try {
-    const email = requireString(req.body.email, 'Email').toLowerCase();
-    const password = requireString(req.body.password, 'Password');
-
-    if (email === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
-      const payload = { email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS };
-      const token = jwt.sign(payload, JWT_SECRET, { expiresIn: ADMIN_TOKEN_TTL });
-      await audit(req, {
-        action: 'auth.login', category: 'auth',
-        actorEmail: ADMIN_EMAIL, actorName: 'Admin', actorRole: 'admin',
-        summary: `${ADMIN_EMAIL} signed in (password, environment admin)`,
-        details: { method: 'password', via: 'env-admin' },
-      });
-      return res.json({ success: true, token, user: { email: ADMIN_EMAIL, name: 'Admin', role: 'admin', permissions: FULL_PERMISSIONS } });
-    }
-
-    const attempted = String(email).toLowerCase().trim();
-    const user = await User.findOne({ email: attempted });
-    if (!user) {
-      await audit(req, {
-        action: 'auth.login_failed', category: 'auth', outcome: 'failure',
-        actorEmail: attempted, actorName: '', actorRole: '',
-        summary: `Failed sign-in for ${attempted} — no such account`,
-        details: { reason: 'unknown_account' },
-      });
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-    if (!user.isActive) {
-      await audit(req, {
-        action: 'auth.login_failed', category: 'auth', outcome: 'failure',
-        actorEmail: attempted, actorName: user.name || '', actorRole: user.role || '',
-        summary: `Failed sign-in for ${attempted} — account is deactivated`,
-        details: { reason: 'deactivated' },
-      });
-      return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
-    }
-    const valid = await user.comparePassword(password);
-    if (!valid) {
-      await audit(req, {
-        action: 'auth.login_failed', category: 'auth', outcome: 'failure',
-        actorEmail: attempted, actorName: user.name || '', actorRole: user.role || '',
-        summary: `Failed sign-in for ${attempted} — wrong password`,
-        details: { reason: 'bad_password' },
-      });
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    const perms = user.role === 'admin' ? FULL_PERMISSIONS : (user.permissions || FULL_PERMISSIONS);
-    const payload = { userId: user._id.toString(), email: user.email, role: user.role, permissions: perms };
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: user.role === 'admin' ? ADMIN_TOKEN_TTL : USER_TOKEN_TTL });
-    await audit(req, {
-      action: 'auth.login', category: 'auth',
-      actorEmail: user.email, actorName: user.name || '', actorRole: user.role,
-      summary: `${user.email} signed in (password)`,
-      details: { method: 'password', role: user.role },
-    });
-    res.json({ success: true, token, user: { email: user.email, name: user.name, role: user.role, permissions: perms } });
-  } catch (err) {
-    sendServerError(res, err);
-  }
-});
-
 app.get('/api/auth/verify', async (req, res) => {
   const decoded = decodeToken(req);
   if (!decoded) return res.status(401).json({ error: 'Invalid or expired token' });
 
-  // Admin email uses env credentials — no DB lookup needed
-  if (decoded.role === 'admin' && decoded.email?.toLowerCase() === ADMIN_EMAIL?.toLowerCase()) {
-    return res.json({ success: true, user: { email: decoded.email, name: decoded.name || 'Admin', role: 'admin', permissions: FULL_PERMISSIONS } });
-  }
-
-  // For all other users, fetch latest permissions from DB so hard-refresh picks up changes immediately
+  // Role and permissions always come from the database, so a promotion,
+  // demotion or deactivation shows up on the next page load.
   try {
     const dbUser = await User.findOne({ email: decoded.email?.toLowerCase() });
-    if (dbUser) {
-      if (!dbUser.isActive) return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
-      const perms = dbUser.role === 'admin' ? FULL_PERMISSIONS : (dbUser.permissions || {});
-      return res.json({ success: true, user: { email: dbUser.email, name: dbUser.name || decoded.name || '', role: dbUser.role, permissions: perms } });
-    }
-  } catch (_) {}
+    if (!dbUser) return res.status(401).json({ error: 'Account not found. Please sign in again.' });
+    if (!dbUser.isActive) return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
+    const perms = dbUser.role === 'admin' ? FULL_PERMISSIONS : (dbUser.permissions || {});
+    return res.json({ success: true, user: { email: dbUser.email, name: dbUser.name || decoded.name || '', role: dbUser.role, permissions: perms } });
+  } catch (_) {
+    // Database briefly unreachable: fall through to the token so the page can
+    // still render. Every protected API call re-checks the database itself.
+  }
 
   // Fallback to JWT if DB unavailable
   const perms = decoded.role === 'admin' ? FULL_PERMISSIONS : (decoded.permissions || {});
   res.json({ success: true, user: { email: decoded.email, name: decoded.name || '', role: decoded.role, permissions: perms } });
-});
-
-app.post('/api/admin/login', authLimiter, async (req, res) => {
-  const { email, password } = req.body;
-  const attempted = String(email || '').toLowerCase().trim();
-  if (attempted === ADMIN_EMAIL?.toLowerCase().trim() && password === ADMIN_PASSWORD) {
-    const token = jwt.sign({ email: ADMIN_EMAIL, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: ADMIN_TOKEN_TTL });
-    await audit(req, {
-      action: 'auth.admin_login', category: 'auth',
-      actorEmail: ADMIN_EMAIL, actorName: 'Admin', actorRole: 'admin',
-      summary: `${ADMIN_EMAIL} opened the Admin Panel (environment admin)`,
-      details: { via: 'env-admin' },
-    });
-    return res.json({ success: true, token });
-  }
-  const user = await User.findOne({ email: attempted, role: 'admin', isActive: true });
-  if (user && await user.comparePassword(password)) {
-    const token = jwt.sign({ userId: user._id.toString(), email: user.email, role: 'admin', permissions: FULL_PERMISSIONS }, JWT_SECRET, { expiresIn: ADMIN_TOKEN_TTL });
-    await audit(req, {
-      action: 'auth.admin_login', category: 'auth',
-      actorEmail: user.email, actorName: user.name || '', actorRole: 'admin',
-      summary: `${user.email} opened the Admin Panel`,
-    });
-    return res.json({ success: true, token });
-  }
-  await audit(req, {
-    action: 'auth.admin_login_failed', category: 'auth', outcome: 'failure',
-    actorEmail: attempted, actorName: '', actorRole: '',
-    summary: `Failed Admin Panel sign-in for ${attempted || '(no email given)'}`,
-  });
-  res.status(401).json({ error: 'Invalid email or password' });
 });
 
 app.get('/api/admin/verify', requireAdmin, (req, res) => {
@@ -459,10 +358,11 @@ app.post('/api/auth/microsoft/exchange', authLimiter, async (req, res) => {
     const name = graph.data.displayName || '';
     if (!email) return res.status(400).json({ error: 'Could not retrieve email from Microsoft account' });
 
-    const isAdminEmail = email === ADMIN_EMAIL?.toLowerCase().trim();
-    let role = isAdminEmail ? 'admin' : 'viewer';
+    // Admin or not is decided only by the user's database record. A first-time
+    // sign-in creates a viewer; an existing admin sees the admin panel.
+    let role = 'viewer';
     const DEFAULT_MS_PERMISSIONS = { productTypes: true, compatibility: true, cloudInfo: true, documents: false };
-    let permissions = isAdminEmail ? FULL_PERMISSIONS : DEFAULT_MS_PERMISSIONS;
+    let permissions = DEFAULT_MS_PERMISSIONS;
 
     try {
       let dbUser = await User.findOne({ email });
@@ -470,7 +370,7 @@ app.post('/api/auth/microsoft/exchange', authLimiter, async (req, res) => {
         if (!dbUser.isActive) return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
         role = dbUser.role;
         permissions = dbUser.role === 'admin' ? FULL_PERMISSIONS : (dbUser.permissions || DEFAULT_MS_PERMISSIONS);
-      } else if (!isAdminEmail) {
+      } else {
         // Create DB record for new MS user so verify can always read fresh permissions
         dbUser = await User.create({
           email,
@@ -491,46 +391,6 @@ app.post('/api/auth/microsoft/exchange', authLimiter, async (req, res) => {
       actorEmail: email, actorName: name || '', actorRole: role,
       summary: `${email} signed in with Microsoft`,
       details: { method: 'microsoft', role },
-    });
-    res.json({ success: true, token, user: { email, name, role, permissions } });
-  } catch (err) {
-    sendServerError(res, err);
-  }
-});
-
-app.post('/api/auth/microsoft', authLimiter, async (req, res) => {
-  const { accessToken } = req.body;
-  if (!accessToken) return res.status(400).json({ error: 'Access token required' });
-
-  try {
-    const graph = await graphRequest(accessToken);
-    if (graph.status !== 200) return res.status(401).json({ error: 'Invalid Microsoft token' });
-
-    const email = ((graph.data.mail || graph.data.userPrincipalName) || '').toLowerCase().trim();
-    const name = graph.data.displayName || '';
-
-    if (!email) return res.status(400).json({ error: 'Could not retrieve email from Microsoft account' });
-
-    const isAdminEmail = email === ADMIN_EMAIL?.toLowerCase().trim();
-    let role = isAdminEmail ? 'admin' : 'viewer';
-    let permissions = FULL_PERMISSIONS;
-
-    try {
-      const dbUser = await User.findOne({ email });
-      if (dbUser) {
-        if (!dbUser.isActive) return res.status(401).json({ error: 'Account is deactivated. Contact admin.' });
-        role = dbUser.role;
-        permissions = dbUser.role === 'admin' ? FULL_PERMISSIONS : (dbUser.permissions || FULL_PERMISSIONS);
-      }
-    } catch {}
-
-    const payload = { email, name, role, permissions };
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: role === 'admin' ? ADMIN_TOKEN_TTL : USER_TOKEN_TTL });
-    await audit(req, {
-      action: 'auth.microsoft_login', category: 'auth',
-      actorEmail: email, actorName: name || '', actorRole: role,
-      summary: `${email} signed in with Microsoft`,
-      details: { method: 'microsoft-token' },
     });
     res.json({ success: true, token, user: { email, name, role, permissions } });
   } catch (err) {
@@ -622,12 +482,10 @@ async function sendMail(to, subject, htmlBody) {
   }
 }
 
-// Everyone who should be notified of a new access request: the environment
-// admin plus every active admin user. Deduplicated and lower-cased so a person
-// who is both never gets two copies.
+// Everyone who should be notified of a new access request: every active admin
+// user in the database. Deduplicated and lower-cased.
 async function adminRecipients() {
   const emails = new Set();
-  if (ADMIN_EMAIL) emails.add(ADMIN_EMAIL.toLowerCase().trim());
   try {
     const admins = await User.find({ role: 'admin', isActive: { $ne: false } })
       .select('email').lean();
@@ -979,15 +837,26 @@ app.get('/api/users', requireAdmin, async (req, res) => {
   } catch (err) { sendServerError(res, err); }
 });
 
+// With sign-in decided purely by the database, the last active admin must never
+// be demoted, deactivated or deleted — otherwise nobody could reach the admin
+// panel again without editing the database by hand.
+async function isLastActiveAdmin(user) {
+  if (!user || user.role !== 'admin' || user.isActive === false) return false;
+  const others = await User.countDocuments({ _id: { $ne: user._id }, role: 'admin', isActive: { $ne: false } });
+  return others === 0;
+}
+
 app.post('/api/users', requireAdmin, async (req, res) => {
   try {
-    const { email, password, name, role, permissions } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+    const { email, name, role, permissions } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
     const existing = await User.findOne({ email: email.toLowerCase().trim() });
     if (existing) return res.status(400).json({ error: 'A user with this email already exists' });
     const user = await User.create({
       email: email.toLowerCase().trim(),
-      password,
+      // Sign-in is Microsoft only. The schema still requires a password, so a
+      // random one is stored; it is never used to sign in.
+      password: crypto.randomBytes(32).toString('hex'),
       name: name || '',
       role: role || 'viewer',
       permissions: permissions || {},
@@ -1007,7 +876,8 @@ app.post('/api/users', requireAdmin, async (req, res) => {
 
 app.put('/api/users/:id', requireAdmin, async (req, res) => {
   try {
-    const { name, role, permissions, password, isActive, documentFolders, documentAccess } = req.body;
+    // No password field: sign-in is Microsoft only.
+    const { name, role, permissions, isActive, documentFolders, documentAccess } = req.body;
     const update = {};
     if (name !== undefined) update.name = name;
     if (role !== undefined) update.role = role;
@@ -1016,6 +886,12 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
 
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const staysAdmin = (update.role !== undefined ? update.role : user.role) === 'admin'
+      && (update.isActive !== undefined ? update.isActive !== false : user.isActive !== false);
+    if (!staysAdmin && await isLastActiveAdmin(user)) {
+      return res.status(400).json({ error: 'At least one active admin must remain. Make someone else an admin first.' });
+    }
 
     // Folder grants are spelled out separately so the audit entry can name the
     // folders that were opened up or taken away, not just say "permissions".
@@ -1055,7 +931,6 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
     }
 
     Object.assign(user, update);
-    if (password) user.password = password;
     await user.save();
 
     const obj = user.toObject();
@@ -1063,8 +938,8 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
     await audit(req, {
       action: 'user.updated', category: 'user',
       targetType: 'user', targetId: user._id, targetName: user.email,
-      summary: `Updated account ${user.email}` + (Object.keys(update).length ? ` — ${Object.keys(update).join(", ")}` : "") + (password ? " — password reset" : "") + folderNote,
-      details: { changed: Object.keys(update), passwordChanged: !!password, role: user.role, isActive: user.isActive },
+      summary: `Updated account ${user.email}` + (Object.keys(update).length ? ` — ${Object.keys(update).join(", ")}` : "") + folderNote,
+      details: { changed: Object.keys(update), role: user.role, isActive: user.isActive },
     });
     res.json({ success: true, user: { ...obj, id: obj._id.toString() } });
   } catch (err) { sendServerError(res, err); }
@@ -1072,6 +947,11 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
 
 app.delete('/api/users/:id', requireAdmin, async (req, res) => {
   try {
+    const target = await User.findById(req.params.id);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    if (await isLastActiveAdmin(target)) {
+      return res.status(400).json({ error: 'At least one active admin must remain. Make someone else an admin first.' });
+    }
     const user = await User.findByIdAndDelete(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     await audit(req, {
@@ -2425,11 +2305,11 @@ async function resolveNotificationUser(req) {
   if (!decoded) return null;
 
   const email = String(decoded.email || '').toLowerCase().trim();
-  const isEnvAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase().trim();
   let dbUser = null;
   try { dbUser = await User.findOne({ email }); } catch { /* history still works read-only */ }
 
-  const isAdmin = isEnvAdmin || decoded.role === 'admin' || (dbUser && dbUser.role === 'admin');
+  // The database decides admin status, not the role written into the token.
+  const isAdmin = !!(dbUser && dbUser.role === 'admin');
   const permissions = isAdmin
     ? FULL_PERMISSIONS
     : ((dbUser && dbUser.permissions) || decoded.permissions || {});
@@ -3757,16 +3637,14 @@ function grantsFromUser(email, user) {
   const empty = { admin: false, email: '', docGrants: new Set(), folderGrants: new Set() };
   if (!email) return empty;
 
-  const isEnvAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase().trim();
-
   // A deactivated account loses access at once rather than when its token runs out.
   if (user && user.isActive === false) return { ...empty, email };
 
-  // Fail closed: admin is granted ONLY to the env-admin (which has no DB row by
-  // design) or to a user whose DB row currently says role === 'admin'. A missing
-  // row or a DB error never confers admin from the token alone — so a deleted
-  // admin, or any request during a DB blip, cannot bypass per-document access.
-  const admin = isEnvAdmin || (user ? user.role === 'admin' : false);
+  // Fail closed: admin is granted ONLY to a user whose DB row currently says
+  // role === 'admin'. A missing row or a DB error never confers admin from the
+  // token alone — so a deleted admin, or any request during a DB blip, cannot
+  // bypass per-document access.
+  const admin = !!(user && user.role === 'admin');
 
   return {
     admin,

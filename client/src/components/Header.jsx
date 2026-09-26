@@ -80,6 +80,7 @@ function Header({ darkMode, onToggleDark, isAdmin, onLogout, user }) {
         </button>
 
         {isAdmin && <Link to="/" className="header-nav-link">View Docs</Link>}
+        {!isAdmin && user && user.role === 'admin' && <Link to="/admin" className="header-nav-link">Admin Panel</Link>}
 
         <span className="header-title">Migration Docs</span>
 

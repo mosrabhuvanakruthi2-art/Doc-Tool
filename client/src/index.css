@@ -6472,6 +6472,10 @@ a:hover { text-decoration: underline; }
 .app-dialog-overlay { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(2px); animation: app-dialog-fade 0.15s ease-out; }
 .app-dialog { width: 100%; max-width: 460px; max-height: calc(100vh - 32px); display: flex; flex-direction: column; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 14px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25); animation: app-dialog-pop 0.18s ease-out; font-family: var(--font-family); }
 .app-dialog-wide { max-width: 620px; }
+.app-dialog { position: relative; }
+.app-dialog-close { position: absolute; top: 12px; right: 12px; z-index: 1; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; color: var(--text-secondary); background: transparent; border: 0; border-radius: 50%; cursor: pointer; transition: background 0.15s, color 0.15s; }
+.app-dialog-close:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.app-dialog-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .app-dialog-title { margin: 0; padding: 20px 24px 6px; font-size: 18px; font-weight: 800; letter-spacing: -0.2px; }
 .app-dialog-title.is-good { color: #15803d; }
 .app-dialog-title.is-warn { color: #b45309; }
@@ -6527,6 +6531,10 @@ a:hover { text-decoration: underline; }
 .doc-folder-drop-card strong { font-size: 15px; color: var(--text-primary); }
 .doc-folder-drop-card span { font-size: 12.5px; color: var(--text-secondary); }
 
-/* ===== "Upload Folder" window: a single drop line ===== */
-.app-dialog-body .upload-folder-zone { margin: 16px 0 20px; min-height: 220px; justify-content: center; border-width: 2px; border-radius: 12px; }
+/* Upload window (Upload Folder / Upload Files): a single drop line */
+.app-dialog-body .upload-folder-zone { margin: 44px 0 24px; min-height: 220px; justify-content: center; border-width: 2px; border-radius: 12px; }
 .app-dialog-body .upload-folder-zone .doc-dropzone-text { font-size: 15px; }
+
+/* Upload window: the "Upload into" folder choice */
+.app-dialog-body #import-destination { margin-bottom: 14px; }
+

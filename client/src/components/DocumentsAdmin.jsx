@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
-import FolderImportDialog, { UploadFolderDialog } from './FolderImportDialog';
+import FolderImportDialog, { UploadDialog } from './FolderImportDialog';
 import { useLinkDialog } from './AppDialog';
 import { useUrlParams } from '../useUrlParams';
 import FilePreview, { previewKindOf, TEXT_EXTS } from './FilePreview';
@@ -94,13 +94,14 @@ function DocumentsAdmin({ onChanged }) {
   const [reorderMode, setReorderMode] = useState(false); // drag-to-reorder is opt-in, off by default
 
   const fileInputRef = useRef(null);
-  const folderInputRef = useRef(null);
+  const folderInputRef = useRef(null); // the Upload Folder button's picker
+  const filesInputRef = useRef(null);  // the Upload Files button's picker
+  const [uploadMode, setUploadMode] = useState(''); // our Upload window: 'folder' | 'files' | '' (closed)
   const editorRef = useRef(null);
   const formTopRef = useRef(null);
   const [folderUpload, setFolderUpload] = useState(null); // { done, total } while importing
   const [importJob, setImportJob] = useState(null);       // folder import progress window
   const importStopRef = useRef(false);
-  const [uploadDialogOpen, setUploadDialogOpen] = useState(false); // our "Upload a folder" window
   const [folderDropActive, setFolderDropActive] = useState(false); // a folder is being dragged over the list
 
   useEffect(() => { fetchAll(); }, []);
@@ -724,6 +725,7 @@ function DocumentsAdmin({ onChanged }) {
       rootLabel,
       unsupported,
       ignoredLoose,
+      destinationId: '', // the folder it goes into ("Upload into"); '' = top level
       stopped: false,
       items: items.map((it) => ({ path: it.relPath, file: it.file, status: 'waiting', error: '' })),
     };
@@ -740,7 +742,7 @@ function DocumentsAdmin({ onChanged }) {
     // ones we create in this run. Keyed by "parentId/childName".
     const byKey = new Map(folders.map(f => [(f.parentId || '') + '/' + f.name, f.id]));
     const ensureFolderPath = async (segments) => {
-      let parentId = '';
+      let parentId = job.destinationId || '';
       for (const seg of segments) {
         const key = (parentId || '') + '/' + seg;
         let id = byKey.get(key);
@@ -764,7 +766,7 @@ function DocumentsAdmin({ onChanged }) {
         // A path like "Guides/Migration/setup.pdf": everything before the file name
         // is the folder path to recreate.
         const dirs = it.path.split('/').filter(Boolean).slice(0, -1);
-        const folderId = dirs.length ? await ensureFolderPath(dirs) : '';
+        const folderId = await ensureFolderPath(dirs);
         await uploadOneFile(it.file, folderId);
         setItem(i, { status: 'done' });
       } catch (err) {
@@ -785,16 +787,26 @@ function DocumentsAdmin({ onChanged }) {
     setImportJob((prev) => (prev ? { ...prev, stopped: true } : prev));
   };
 
-  // Upload Folder button. The browser shows its own "Upload N files to this site?"
-  // prompt first (a browser security check no site can change), so we go straight
-  // to the progress window instead of asking a second time.
-  const handleFolderUpload = (e) => {
+  // Upload Folder: the browser's folder picker (it shows its own one-time
+  // "Upload files to this site?" check, which no site can switch off). Then our
+  // window asks where to put it and uploads on the Upload button.
+  const handleFolderPicked = (e) => {
     const picked = Array.from(e.target.files || []);
     e.target.value = '';
     const items = picked.filter(f => !isSkippableFile(f)).map((f) => ({ file: f, relPath: f.webkitRelativePath || f.name }));
     if (!items.length) { showToast('No files found in that folder', 'error'); return; }
     const rootLabel = items[0].relPath.split('/')[0] || 'selected folder';
-    beginImport(items, { rootLabel, unsupported: picked.length - items.length, confirmFirst: false });
+    beginImport(items, { rootLabel, unsupported: picked.length - items.length, confirmFirst: true });
+  };
+
+  // Upload Files: the normal multi-file picker (no browser confirmation box).
+  const handleFilesPicked = (e) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = '';
+    const items = picked.filter(f => !isSkippableFile(f)).map((f) => ({ file: f, relPath: f.name }));
+    if (!items.length) { showToast('No files selected', 'error'); return; }
+    const rootLabel = `${items.length} selected file${items.length !== 1 ? 's' : ''}`;
+    beginImport(items, { rootLabel, unsupported: picked.length - items.length, confirmFirst: true });
   };
 
   // A folder dragged onto the Documents list: no browser prompt, so we show our
@@ -823,12 +835,14 @@ function DocumentsAdmin({ onChanged }) {
       }
     };
     for (const entry of entries) {
-      if (entry.isDirectory) { roots.push(entry.name); await walk(entry, ''); } else loose += 1;
+      if (entry.isDirectory) roots.push(entry.name);
+      else loose += 1;
+      await walk(entry, ''); // a loose file lands straight in the chosen location
     }
     return { items, roots, loose, skipped };
   };
   const onListDragOver = (e) => {
-    if (!isFileDrag(e) || folderUpload || uploadDialogOpen) return;
+    if (!isFileDrag(e) || folderUpload || uploadMode) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     if (!folderDropActive) setFolderDropActive(true);
@@ -841,14 +855,13 @@ function DocumentsAdmin({ onChanged }) {
   // entries synchronously, so it must run before anything is awaited.
   const importDroppedData = async (dt) => {
     const { items, roots, loose, skipped } = await readDroppedFolders(dt);
-    if (!items.length) {
-      showToast(loose ? 'Drop a folder here. To add single files, open a folder and use “+ Document”.' : 'That folder has no files to import.', 'error');
-      return;
-    }
-    beginImport(items, { rootLabel: roots.join(', '), unsupported: skipped, ignoredLoose: loose, confirmFirst: true });
+    if (!items.length) { showToast('Nothing to upload there.', 'error'); return; }
+    const labels = [...roots];
+    if (loose) labels.push(`${loose} file${loose !== 1 ? 's' : ''}`);
+    beginImport(items, { rootLabel: labels.join(', '), unsupported: skipped, confirmFirst: true });
   };
   const onListDrop = (e) => {
-    if (!isFileDrag(e) || folderUpload || uploadDialogOpen) return;
+    if (!isFileDrag(e) || folderUpload || uploadMode) return;
     e.preventDefault();
     setFolderDropActive(false);
     importDroppedData(e.dataTransfer);
@@ -1287,46 +1300,49 @@ function DocumentsAdmin({ onChanged }) {
           <div className="doc-folder-drop-overlay" aria-hidden="true">
             <div className="doc-folder-drop-card">
               <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M12 11v6M9 14l3-3 3 3" /></svg>
-              <strong>Drop a folder to import it</strong>
-              <span>Its files and subfolders are uploaded, keeping the same structure.</span>
+              <strong>Drop folders or files to upload</strong>
+              <span>Folders keep their subfolders. You choose where they go next.</span>
             </div>
           </div>
         )}
-        <UploadFolderDialog
-          open={uploadDialogOpen}
-          onClose={() => setUploadDialogOpen(false)}
-          onDropData={(dt) => { setUploadDialogOpen(false); importDroppedData(dt); }}
-          onBrowse={() => { setUploadDialogOpen(false); if (folderInputRef.current) folderInputRef.current.click(); }}
+        <UploadDialog
+          mode={uploadMode}
+          onClose={() => setUploadMode('')}
+          onDropData={(dt) => { setUploadMode(''); importDroppedData(dt); }}
+          onBrowse={() => {
+            const input = uploadMode === 'files' ? filesInputRef.current : folderInputRef.current;
+            setUploadMode('');
+            if (input) input.click();
+          }}
         />
         <FolderImportDialog
           job={importJob}
           onStart={() => importJob && runImport(importJob)}
           onCancel={() => setImportJob(null)}
+          folderOptions={folderOptions}
+          onDestination={(id) => setImportJob((prev) => (prev ? { ...prev, destinationId: id } : prev))}
           onStop={stopImport}
           onClose={() => setImportJob(null)}
         />
         <div className="cloud-info-header">
           <h3>Documents Management</h3>
           <div className="doc-tree-header-actions">
-            <button
-              className="btn-create-new btn-create-folder"
-              onClick={() => setUploadDialogOpen(true)}
-              disabled={!!folderUpload}
-            >
-              {folderUpload ? `Importing ${folderUpload.done}/${folderUpload.total}…` : 'Upload Folder'}
-            </button>
+            {/* Browsers have no single picker for files and folders, so one button each.
+                Each opens our Upload window (drag & drop or browse), then "Upload into". */}
+            {folderUpload ? (
+              <button className="btn-create-new btn-create-folder" disabled>
+                {`Importing ${folderUpload.done}/${folderUpload.total}…`}
+              </button>
+            ) : (
+              <>
+                <button className="btn-create-new btn-create-folder" onClick={() => setUploadMode('folder')}>Upload Folder</button>
+                <button className="btn-create-new btn-create-folder" onClick={() => setUploadMode('files')}>Upload Files</button>
+              </>
+            )}
             <button className="btn-create-new btn-create-folder" onClick={() => startNewFolder('')}>+ New Folder</button>
-            {/* webkitdirectory lets the browser hand us a whole folder, with each
-                file's path in webkitRelativePath. */}
-            <input
-              ref={folderInputRef}
-              type="file"
-              webkitdirectory=""
-              directory=""
-              multiple
-              hidden
-              onChange={handleFolderUpload}
-            />
+            {/* webkitdirectory hands us a whole folder, each file's path in webkitRelativePath. */}
+            <input ref={folderInputRef} type="file" webkitdirectory="" directory="" multiple hidden onChange={handleFolderPicked} />
+            <input ref={filesInputRef} type="file" multiple hidden onChange={handleFilesPicked} />
           </div>
         </div>
 

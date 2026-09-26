@@ -1,13 +1,16 @@
 import { useState } from 'react';
 import { AppDialog } from './AppDialog';
 
-// "Upload Folder" window: one drop line. Dropping a folder is fully in-page; clicking
-// (or "browse") opens the browser's folder picker as a fallback.
-export function UploadFolderDialog({ open, onClose, onDropData, onBrowse }) {
+// Upload window opened by the Upload Folder / Upload Files buttons: one drop line.
+// mode 'folder': drop a folder, or browse opens the folder picker.
+// mode 'files':  drop files, or browse opens the multi-file picker.
+// Either way the next step is our "Upload into" window with the Upload button.
+export function UploadDialog({ mode, onClose, onDropData, onBrowse }) {
   const [over, setOver] = useState(false);
   const isFiles = (e) => Array.from((e.dataTransfer && e.dataTransfer.types) || []).includes('Files');
+  const what = mode === 'files' ? 'files' : 'folder';
   return (
-    <AppDialog open={open} onClose={onClose} wide>
+    <AppDialog open={!!mode} onClose={onClose} wide showClose>
       <div
         className={`doc-dropzone upload-folder-zone${over ? ' doc-dropzone-over' : ''}`}
         onDragEnter={(e) => { if (isFiles(e)) { e.preventDefault(); e.stopPropagation(); setOver(true); } }}
@@ -21,7 +24,7 @@ export function UploadFolderDialog({ open, onClose, onDropData, onBrowse }) {
       >
         <svg className="doc-dropzone-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
         <div className="doc-dropzone-text">
-          <strong>{over ? 'Drop to upload' : 'Drag & drop'}</strong> folder here, or <span className="doc-dropzone-link">browse</span>
+          <strong>{over ? 'Drop to upload' : 'Drag & drop'}</strong> {what} here, or <span className="doc-dropzone-link">browse</span>
         </div>
       </div>
     </AppDialog>
@@ -53,7 +56,7 @@ function counts(items) {
   return c;
 }
 
-export default function FolderImportDialog({ job, onStart, onCancel, onStop, onClose }) {
+export default function FolderImportDialog({ job, onStart, onCancel, onStop, onClose, folderOptions = [], onDestination }) {
   if (!job) return null;
   const total = job.items.length;
   const c = counts(job.items);
@@ -62,12 +65,12 @@ export default function FolderImportDialog({ job, onStart, onCancel, onStop, onC
   const current = job.items.find((it) => it.status === 'uploading');
   const folderCount = new Set(job.items.map((it) => it.path.split('/').slice(0, -1).join('/')).filter(Boolean)).size;
 
-  // ---------- 1. confirm (drag-and-drop only; the picker already asked) ----------
+  // ---------- 1. confirm: our only confirmation (no browser box) ----------
   if (job.stage === 'confirm') {
     return (
       <AppDialog
         open
-        title="Import folder into Documents?"
+        title="Upload into Documents?"
         onClose={onCancel}
         wide
         actions={(
@@ -79,9 +82,21 @@ export default function FolderImportDialog({ job, onStart, onCancel, onStop, onC
           </>
         )}
       >
+        <label className="app-dialog-label" htmlFor="import-destination">Upload into</label>
+        <select
+          id="import-destination"
+          className="app-dialog-input"
+          value={job.destinationId || ''}
+          onChange={(e) => onDestination && onDestination(e.target.value)}
+        >
+          <option value="">Top level</option>
+          {folderOptions.map((o) => (
+            <option key={o.id} value={o.id}>{'  '.repeat(o.depth) + (o.depth ? '└ ' : '') + o.name}</option>
+          ))}
+        </select>
         <p className="app-dialog-text">
-          <strong>{total}</strong> file{total !== 1 ? 's' : ''} from <strong>“{job.rootLabel}”</strong>
-          {folderCount > 1 ? ` in ${folderCount} folders` : ''} will be uploaded, keeping the same folder structure.
+          <strong>{total}</strong> file{total !== 1 ? 's' : ''}{folderCount ? <> from <strong>“{job.rootLabel}”</strong></> : ''}
+          {folderCount > 1 ? ` in ${folderCount} folders` : ''} will be uploaded{folderCount ? ', keeping the same folder structure' : ''}.
           Files whose name already exists in the same folder are skipped.
         </p>
         <ul className="import-list import-list-preview">

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 
 // Base dialog: dimmed overlay + centred card. Escape and a click on the overlay
 // close it unless `dismissable` is false (e.g. while an upload is running).
-export function AppDialog({ open, title, children, actions, onClose, dismissable = true, wide = false, tone }) {
+export function AppDialog({ open, title, children, actions, onClose, dismissable = true, wide = false, tone, showClose = false }) {
   useEffect(() => {
     if (!open || !dismissable) return undefined;
     const onKey = (e) => { if (e.key === 'Escape' && onClose) onClose(); };
@@ -23,6 +23,11 @@ export function AppDialog({ open, title, children, actions, onClose, dismissable
         aria-label={typeof title === 'string' ? title : undefined}
         onMouseDown={(e) => e.stopPropagation()}
       >
+        {showClose && dismissable && (
+          <button type="button" className="app-dialog-close" onClick={onClose} aria-label="Close" title="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          </button>
+        )}
         {title && <h3 className={`app-dialog-title${tone ? ` is-${tone}` : ''}`}>{title}</h3>}
         <div className="app-dialog-body">{children}</div>
         {actions && <div className="app-dialog-actions">{actions}</div>}

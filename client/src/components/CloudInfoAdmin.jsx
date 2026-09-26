@@ -4,6 +4,7 @@ const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
 import { useUrlParams } from '../useUrlParams';
+import { useLinkDialog } from './AppDialog';
 
 const MAX_CLOUD_INFO_PAGES = 50;
 const MAX_CLOUD_INFO_IMAGES = 200;
@@ -258,10 +259,9 @@ function CloudInfoAdmin({ onChanged }) {
     editorRef.current?.focus();
   };
 
-  const handleInsertLink = () => {
-    const url = prompt('Enter URL:');
-    if (url) execCmd('createLink', url);
-  };
+  // In-page link dialog instead of the browser's prompt().
+  const { openLinkDialog, linkDialog } = useLinkDialog(editorRef);
+  const handleInsertLink = openLinkDialog;
 
   const handleInfoDragEnd = async () => {
     const from = infoDragItem.current;
@@ -424,6 +424,7 @@ function CloudInfoAdmin({ onChanged }) {
                 </select>
                 <span className="toolbar-sep">|</span>
                 <button type="button" onClick={handleInsertLink} title="Insert Link">Link</button>
+                {linkDialog}
                 <span className="toolbar-sep">|</span>
                 <button type="button" onClick={() => execCmd('removeFormat')} title="Clear Formatting">Clear</button>
               </div>

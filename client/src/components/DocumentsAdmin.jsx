@@ -3,6 +3,8 @@ import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 const loadMammoth = () => import('mammoth').then((m) => m.default);
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
+import FolderImportDialog, { UploadFolderDialog } from './FolderImportDialog';
+import { useLinkDialog } from './AppDialog';
 import { useUrlParams } from '../useUrlParams';
 import FilePreview, { previewKindOf, TEXT_EXTS } from './FilePreview';
 // The grid editor (and SheetJS) loads only when a spreadsheet is opened; the fallback is the
@@ -96,6 +98,10 @@ function DocumentsAdmin({ onChanged }) {
   const editorRef = useRef(null);
   const formTopRef = useRef(null);
   const [folderUpload, setFolderUpload] = useState(null); // { done, total } while importing
+  const [importJob, setImportJob] = useState(null);       // folder import progress window
+  const importStopRef = useRef(false);
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false); // our "Upload a folder" window
+  const [folderDropActive, setFolderDropActive] = useState(false); // a folder is being dragged over the list
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -708,16 +714,31 @@ function DocumentsAdmin({ onChanged }) {
     }
   };
 
-  const handleFolderUpload = async (e) => {
-    const picked = Array.from(e.target.files || []);
-    e.target.value = '';
-    const files = picked.filter(f => !isSkippableFile(f));
-    if (!files.length) { showToast('No files found in that folder', 'error'); return; }
+  // ---- Folder import: the Upload Folder button, or a folder dropped on the list ----
+  // Every file is tracked (waiting / uploading / uploaded / already exists / failed
+  // with the server's reason) and shown in a progress window in the middle of the
+  // screen. Stop finishes the current file, then stops.
+  const beginImport = (items, { rootLabel, unsupported = 0, ignoredLoose = 0, confirmFirst }) => {
+    const job = {
+      stage: confirmFirst ? 'confirm' : 'running',
+      rootLabel,
+      unsupported,
+      ignoredLoose,
+      stopped: false,
+      items: items.map((it) => ({ path: it.relPath, file: it.file, status: 'waiting', error: '' })),
+    };
+    setImportJob(job);
+    if (!confirmFirst) runImport(job);
+  };
+
+  const runImport = async (job) => {
+    importStopRef.current = false;
+    setImportJob({ ...job, stage: 'running', stopped: false });
+    const setItem = (i, patch) => setImportJob((prev) => (prev ? { ...prev, items: prev.items.map((it, n) => (n === i ? { ...it, ...patch } : it)) } : prev));
 
     // Live snapshot of the tree so we reuse folders that already exist and the
     // ones we create in this run. Keyed by "parentId/childName".
     const byKey = new Map(folders.map(f => [(f.parentId || '') + '/' + f.name, f.id]));
-
     const ensureFolderPath = async (segments) => {
       let parentId = '';
       for (const seg of segments) {
@@ -733,35 +754,104 @@ function DocumentsAdmin({ onChanged }) {
       return parentId;
     };
 
-    setFolderUpload({ done: 0, total: files.length });
-    let ok = 0; let duplicates = 0; const failed = [];
-    for (const file of files) {
+    const total = job.items.length;
+    setFolderUpload({ done: 0, total });
+    for (let i = 0; i < total; i++) {
+      if (importStopRef.current) break;
+      const it = job.items[i];
+      setItem(i, { status: 'uploading' });
       try {
-        // webkitRelativePath is like "Guides/Migration/setup.pdf" — everything
-        // before the filename is the folder path to recreate.
-        const parts = (file.webkitRelativePath || file.name).split('/').filter(Boolean);
-        const dirs = parts.slice(0, -1);
+        // A path like "Guides/Migration/setup.pdf": everything before the file name
+        // is the folder path to recreate.
+        const dirs = it.path.split('/').filter(Boolean).slice(0, -1);
         const folderId = dirs.length ? await ensureFolderPath(dirs) : '';
-        await uploadOneFile(file, folderId);
-        ok += 1;
+        await uploadOneFile(it.file, folderId);
+        setItem(i, { status: 'done' });
       } catch (err) {
         // A name that already exists in its folder is skipped, not a failure.
-        if (err.duplicate) duplicates += 1;
-        else failed.push(file.webkitRelativePath || file.name);
+        if (err.duplicate) setItem(i, { status: 'skipped' });
+        else setItem(i, { status: 'failed', error: (err && err.message) || 'Upload failed' });
       }
-      setFolderUpload({ done: ok + duplicates + failed.length, total: files.length });
+      setFolderUpload({ done: i + 1, total });
     }
     setFolderUpload(null);
+    setImportJob((prev) => (prev ? { ...prev, stage: 'done', stopped: importStopRef.current } : prev));
     await fetchAll();
     notifyChanged();
-    const unsupported = picked.length - files.length;
-    const skipped = duplicates + unsupported;
-    showToast(
-      `Imported ${ok} document${ok !== 1 ? 's' : ''}`
-      + (failed.length ? `, ${failed.length} failed` : '')
-      + (skipped ? `. Skipped ${skipped}${duplicates ? ` (${duplicates} already existed)` : ''}${unsupported ? `${duplicates ? ',' : ''} ${unsupported} unsupported` : ''}.` : ''),
-      failed.length ? 'error' : 'success',
-    );
+  };
+
+  const stopImport = () => {
+    importStopRef.current = true;
+    setImportJob((prev) => (prev ? { ...prev, stopped: true } : prev));
+  };
+
+  // Upload Folder button. The browser shows its own "Upload N files to this site?"
+  // prompt first (a browser security check no site can change), so we go straight
+  // to the progress window instead of asking a second time.
+  const handleFolderUpload = (e) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = '';
+    const items = picked.filter(f => !isSkippableFile(f)).map((f) => ({ file: f, relPath: f.webkitRelativePath || f.name }));
+    if (!items.length) { showToast('No files found in that folder', 'error'); return; }
+    const rootLabel = items[0].relPath.split('/')[0] || 'selected folder';
+    beginImport(items, { rootLabel, unsupported: picked.length - items.length, confirmFirst: false });
+  };
+
+  // A folder dragged onto the Documents list: no browser prompt, so we show our
+  // own confirmation first. Folder contents are read through the drop entries.
+  const isFileDrag = (e) => Array.from((e.dataTransfer && e.dataTransfer.types) || []).includes('Files');
+  const readDroppedFolders = async (dt) => {
+    const entries = [];
+    // Entries must be taken synchronously, before the first await.
+    Array.from(dt.items || []).forEach((item) => {
+      if (item.kind !== 'file' || !item.webkitGetAsEntry) return;
+      const entry = item.webkitGetAsEntry();
+      if (entry) entries.push(entry);
+    });
+    const readBatch = (reader) => new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+    const readAll = async (reader) => { const out = []; for (;;) { const batch = await readBatch(reader); if (!batch.length) return out; out.push(...batch); } };
+    const fileOf = (entry) => new Promise((resolve, reject) => entry.file(resolve, reject));
+    const items = []; const roots = []; let loose = 0; let skipped = 0;
+    const walk = async (entry, prefix) => {
+      if (entry.isFile) {
+        const file = await fileOf(entry);
+        if (isSkippableFile(file)) { skipped += 1; return; }
+        items.push({ file, relPath: prefix + file.name });
+      } else if (entry.isDirectory) {
+        const children = await readAll(entry.createReader());
+        for (const child of children) await walk(child, prefix + entry.name + '/');
+      }
+    };
+    for (const entry of entries) {
+      if (entry.isDirectory) { roots.push(entry.name); await walk(entry, ''); } else loose += 1;
+    }
+    return { items, roots, loose, skipped };
+  };
+  const onListDragOver = (e) => {
+    if (!isFileDrag(e) || folderUpload || uploadDialogOpen) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!folderDropActive) setFolderDropActive(true);
+  };
+  const onListDragLeave = (e) => {
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    setFolderDropActive(false);
+  };
+  // Shared by the list drop and the Upload window. readDroppedFolders takes the
+  // entries synchronously, so it must run before anything is awaited.
+  const importDroppedData = async (dt) => {
+    const { items, roots, loose, skipped } = await readDroppedFolders(dt);
+    if (!items.length) {
+      showToast(loose ? 'Drop a folder here. To add single files, open a folder and use “+ Document”.' : 'That folder has no files to import.', 'error');
+      return;
+    }
+    beginImport(items, { rootLabel: roots.join(', '), unsupported: skipped, ignoredLoose: loose, confirmFirst: true });
+  };
+  const onListDrop = (e) => {
+    if (!isFileDrag(e) || folderUpload || uploadDialogOpen) return;
+    e.preventDefault();
+    setFolderDropActive(false);
+    importDroppedData(e.dataTransfer);
   };
 
   const handleSave = async () => {
@@ -970,7 +1060,9 @@ function DocumentsAdmin({ onChanged }) {
     setIsEditing(false);
   };
   const execCmd = (cmd, value = null) => { document.execCommand(cmd, false, value); editorRef.current?.focus(); };
-  const handleInsertLink = () => { const url = prompt('Enter URL:'); if (url) execCmd('createLink', url); };
+  // In-page link dialog instead of the browser's prompt().
+  const { openLinkDialog, linkDialog } = useLinkDialog(editorRef);
+  const handleInsertLink = openLinkDialog;
 
   const setBatchName = (id, val) =>
     setPendingBatch(prev => prev.map(it => (it.id === id ? { ...it, name: val } : it)));
@@ -1185,13 +1277,40 @@ function DocumentsAdmin({ onChanged }) {
     const empty = rootFolders.length === 0 && rootDocs.length === 0 && newFolderIn === null;
 
     return (
-      <div className="cloud-info-admin">
+      <div
+        className={`cloud-info-admin doc-drop-host${folderDropActive ? ' is-drop-active' : ''}`}
+        onDragOver={onListDragOver}
+        onDragLeave={onListDragLeave}
+        onDrop={onListDrop}
+      >
+        {folderDropActive && (
+          <div className="doc-folder-drop-overlay" aria-hidden="true">
+            <div className="doc-folder-drop-card">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M12 11v6M9 14l3-3 3 3" /></svg>
+              <strong>Drop a folder to import it</strong>
+              <span>Its files and subfolders are uploaded, keeping the same structure.</span>
+            </div>
+          </div>
+        )}
+        <UploadFolderDialog
+          open={uploadDialogOpen}
+          onClose={() => setUploadDialogOpen(false)}
+          onDropData={(dt) => { setUploadDialogOpen(false); importDroppedData(dt); }}
+          onBrowse={() => { setUploadDialogOpen(false); if (folderInputRef.current) folderInputRef.current.click(); }}
+        />
+        <FolderImportDialog
+          job={importJob}
+          onStart={() => importJob && runImport(importJob)}
+          onCancel={() => setImportJob(null)}
+          onStop={stopImport}
+          onClose={() => setImportJob(null)}
+        />
         <div className="cloud-info-header">
           <h3>Documents Management</h3>
           <div className="doc-tree-header-actions">
             <button
               className="btn-create-new btn-create-folder"
-              onClick={() => folderInputRef.current && folderInputRef.current.click()}
+              onClick={() => setUploadDialogOpen(true)}
               disabled={!!folderUpload}
             >
               {folderUpload ? `Importing ${folderUpload.done}/${folderUpload.total}…` : 'Upload Folder'}
@@ -1364,6 +1483,7 @@ function DocumentsAdmin({ onChanged }) {
                 </select>
                 <span className="toolbar-sep">|</span>
                 <button type="button" onClick={handleInsertLink} title="Insert Link">Link</button>
+                {linkDialog}
                 <button type="button" onClick={() => execCmd('removeFormat')} title="Clear Formatting">Clear</button>
               </div>
             )}

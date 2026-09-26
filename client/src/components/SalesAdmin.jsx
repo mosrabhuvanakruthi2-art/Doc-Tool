@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useProductConfig } from '../ProductConfigContext';
 import { showToast } from './Toast';
 import CfLoader from './CfLoader';
@@ -9,6 +9,10 @@ import CfLoader from './CfLoader';
 // shown to salespeople.
 
 const toArrow = (name) => String(name || '').replace(/\s+to\s+/i, ' → ');
+
+// For the combination finder: "Slack to Chat", "slack → chat" and "slack chat"
+// all normalise to the same words.
+const normalizeCombo = (s) => String(s || '').toLowerCase().replace(/→/g, ' ').replace(/\bto\b/g, ' ').replace(/\s+/g, ' ').trim();
 
 function groupByFamily(feats) {
   const m = new Map();
@@ -29,6 +33,49 @@ export default function SalesAdmin() {
   const [view, setView] = useState('migrates');
   const [query, setQuery] = useState('');
   const [savingIds, setSavingIds] = useState(() => new Set());
+
+  // Combination finder (top-right): searches every product type's combinations.
+  const [comboQuery, setComboQuery] = useState('');
+  const [finderOpen, setFinderOpen] = useState(false);
+  const [finderIdx, setFinderIdx] = useState(0);
+  const finderRef = useRef(null);
+
+  const finderResults = useMemo(() => {
+    const words = normalizeCombo(comboQuery).split(' ').filter(Boolean);
+    if (!words.length) return [];
+    const out = [];
+    productTypes.forEach((pt) => {
+      (combinationsByProduct[pt] || []).forEach((name) => {
+        const hay = normalizeCombo(name);
+        if (words.every((w) => hay.includes(w))) out.push({ pt, name });
+      });
+    });
+    return out.slice(0, 30);
+  }, [comboQuery, productTypes, combinationsByProduct]);
+
+  useEffect(() => {
+    const onDown = (e) => { if (finderRef.current && !finderRef.current.contains(e.target)) setFinderOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
+
+  // Jump to a combination, switching product type if needed.
+  const openFound = (hit) => {
+    if (!hit) return;
+    setProduct(hit.pt);
+    setCombo(hit.name);
+    setView('migrates');
+    setQuery('');
+    setComboQuery('');
+    setFinderOpen(false);
+  };
+
+  const onFinderKey = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setFinderIdx((i) => Math.min(i + 1, finderResults.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setFinderIdx((i) => Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); openFound(finderResults[finderIdx]); }
+    else if (e.key === 'Escape') { setFinderOpen(false); }
+  };
 
   // Default the selected product once the config loads.
   useEffect(() => {
@@ -111,11 +158,48 @@ export default function SalesAdmin() {
 
   return (
     <div className="sales-admin">
-      {/* Product-type tabs */}
-      <div className="sales-tabs sales-admin-tabs">
-        {productTypes.map((pt) => (
-          <button key={pt} className={`sales-tab${pt === product ? ' active' : ''}`} onClick={() => selectProduct(pt)}>{pt}</button>
-        ))}
+      {/* Finder for any combination on the left, then the product-type tabs */}
+      <div className="sales-admin-topbar">
+        <div className="sales-admin-finder" ref={finderRef}>
+          <div className="sales-feature-search">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+            <input
+              type="text"
+              value={comboQuery}
+              placeholder="Search all combinations…"
+              onChange={(e) => { setComboQuery(e.target.value); setFinderOpen(true); setFinderIdx(0); }}
+              onFocus={() => setFinderOpen(true)}
+              onKeyDown={onFinderKey}
+              aria-label="Search all combinations"
+            />
+            {comboQuery && <button className="sales-feature-search-clear" onClick={() => { setComboQuery(''); setFinderOpen(false); }} aria-label="Clear">×</button>}
+          </div>
+          {finderOpen && comboQuery.trim() && (
+            <div className="sales-admin-finder-panel" role="listbox">
+              {finderResults.length === 0 ? (
+                <div className="sales-admin-finder-empty">No combination matches “{comboQuery.trim()}”.</div>
+              ) : finderResults.map((hit, i) => (
+                <button
+                  key={hit.pt + '|' + hit.name}
+                  type="button"
+                  role="option"
+                  aria-selected={i === finderIdx}
+                  className={`sales-admin-finder-item${i === finderIdx ? ' active' : ''}`}
+                  onMouseEnter={() => setFinderIdx(i)}
+                  onClick={() => openFound(hit)}
+                >
+                  <span className="sales-admin-finder-name">{toArrow(hit.name)}</span>
+                  <span className="sales-admin-finder-pt">{hit.pt}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="sales-tabs sales-admin-tabs">
+          {productTypes.map((pt) => (
+            <button key={pt} className={`sales-tab${pt === product ? ' active' : ''}`} onClick={() => selectProduct(pt)}>{pt}</button>
+          ))}
+        </div>
       </div>
 
       <div className="sales-admin-body">
@@ -164,8 +248,8 @@ export default function SalesAdmin() {
                 </div>
                 {base.length > 0 && (
                   <div className="sales-admin-bulk-actions">
-                    <button className="sales-admin-bulk-btn" disabled={allShown} onClick={() => persist(base, true)}>Enable all</button>
-                    <button className="sales-admin-bulk-btn" disabled={shownCount === 0} onClick={() => persist(base, false)}>Disable all</button>
+                    <button className="sales-admin-bulk-btn is-enable" disabled={allShown} onClick={() => persist(base, true)}>Enable all</button>
+                    <button className="sales-admin-bulk-btn is-disable" disabled={shownCount === 0} onClick={() => persist(base, false)}>Disable all</button>
                   </div>
                 )}
               </div>

@@ -1,4 +1,5 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import { useContentChanged, sameVersion } from '../liveUpdates';
 import CfLoader from './CfLoader';
 import DocumentAccessRequest from './DocumentAccessRequest';
 import UpdatedOn from './UpdatedOn';
@@ -183,14 +184,28 @@ function DocumentPage({ slug }) {
   const [locked, setLocked] = useState(null);
   const [exporting, setExporting] = useState(false);
 
+  // Live refresh on document or access changes: re-read quietly (no loader).
+  // The on-screen document is kept unless it really changed (updatedAt), so an
+  // open PDF or video is not reloaded because some other document was edited.
+  // A revoked grant flips to the access-request screen; a new grant opens it.
+  const [reloadKey, setReloadKey] = useState(0);
+  const silentRef = useRef(false);
+  useContentChanged(['documents', 'access'], () => { silentRef.current = true; setReloadKey(k => k + 1); });
+
   useEffect(() => {
-    if (!slug) return;
-    setLoading(true);
-    setError('');
-    setLocked(null);
+    if (!slug) return undefined;
+    const silent = silentRef.current;
+    silentRef.current = false;
+    let cancelled = false;
+    if (!silent) {
+      setLoading(true);
+      setError('');
+      setLocked(null);
+    }
     fetch(`/api/documents/${slug}`)
       .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
       .then(({ status, data }) => {
+        if (cancelled) return;
         // This document has not been granted to this reader: offer the request
         // for it (and its locked neighbours) rather than a bare error.
         if (status === 403 && data.documentId) {
@@ -203,11 +218,15 @@ function DocumentPage({ slug }) {
           return;
         }
         if (data.error) throw new Error(data.error);
-        setItem(data.item);
+        setLocked(null);
+        setError('');
+        setItem(prev => (sameVersion(prev, data.item) ? prev : data.item));
       })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [slug]);
+      .catch(err => { if (!cancelled) setError(err.message); })
+      // Always clear on the request that actually finished (see CompatibilityTable).
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [slug, reloadKey]);
 
   if (loading) return <div className="cloud-info-page"><CfLoader inline /></div>;
   if (locked) return (

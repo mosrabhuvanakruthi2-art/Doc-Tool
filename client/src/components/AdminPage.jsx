@@ -15,8 +15,11 @@ const VALID_TABS = ['add', 'edit', 'compatibility', 'cloudinfo', 'documents', 's
 function AdminPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabFromUrl = searchParams.get('tab');
-  const [activeTab, setActiveTab] = useState(VALID_TABS.includes(tabFromUrl) ? tabFromUrl : 'add');
+  // "Features" is one tab: Edit Feature by default, Add Feature from its button.
+  // The URL keeps tab=edit / tab=add, so existing links still open the right view.
+  const [activeTab, setActiveTab] = useState(VALID_TABS.includes(tabFromUrl) ? tabFromUrl : 'edit');
   const [refreshKey, setRefreshKey] = useState(0);
+  const isFeatures = activeTab === 'edit' || activeTab === 'add';
 
   const handleTabChange = (tab) => {
     setActiveTab(tab);
@@ -31,11 +34,8 @@ function AdminPage() {
     <div className="admin-page">
       <div className="admin-container">
         <div className="admin-tabs">
-          <button className={`admin-tab ${activeTab === 'add' ? 'active' : ''}`} onClick={() => handleTabChange('add')}>
-            Add Feature
-          </button>
-          <button className={`admin-tab ${activeTab === 'edit' ? 'active' : ''}`} onClick={() => handleTabChange('edit')}>
-            Edit Feature
+          <button className={`admin-tab ${isFeatures ? 'active' : ''}`} onClick={() => handleTabChange('edit')}>
+            Features
           </button>
           <button className={`admin-tab ${activeTab === 'compatibility' ? 'active' : ''}`} onClick={() => handleTabChange('compatibility')}>
             Compatibility
@@ -60,6 +60,15 @@ function AdminPage() {
           </button>
         </div>
 
+        {isFeatures && (
+          <div className="admin-features-bar">
+            {activeTab === 'edit' ? (
+              <button className="btn-create-new" onClick={() => handleTabChange('add')}>+ Add Feature</button>
+            ) : (
+              <button className="btn-create-new" onClick={() => handleTabChange('edit')}>← Back to Features</button>
+            )}
+          </div>
+        )}
         {activeTab === 'add' && <FeatureScopeForm onSaved={handleSaved} />}
         {activeTab === 'edit' && <EditFeatureTab refreshKey={refreshKey} onChanged={handleSaved} />}
         {activeTab === 'compatibility' && <CompatibilityAdmin onChanged={handleSaved} />}

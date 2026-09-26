@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
+import { useContentChanged, ALL_TOPICS } from '../liveUpdates';
 
 const POLL_MS = 60000;
 
@@ -44,6 +45,11 @@ function NotificationBell() {
     const timer = setInterval(load, POLL_MS);
     return () => clearInterval(timer);
   }, [load]);
+
+  // Admin changes produce notifications: fetch them as soon as they happen
+  // instead of waiting for the next poll. Slightly longer merge window, since
+  // one admin action can touch several kinds of content.
+  useContentChanged(ALL_TOPICS, load, 600);
 
   useEffect(() => {
     function handleClickOutside(e) {

@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useContentChanged, sameVersion } from '../liveUpdates';
 import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
 import { reportDownload } from '../reportDownload';
@@ -32,19 +33,34 @@ function CompatibilityTable({ matrixSlug }) {
   const [showDescriptions, setShowDescriptions] = useState(false);
   const [downloading, setDownloading] = useState('');
 
+  // Live refresh: re-read quietly (no loader) and only redraw if it changed.
+  const [reloadKey, setReloadKey] = useState(0);
+  const silentRef = useRef(false);
+  useContentChanged(['compatibility'], () => { silentRef.current = true; setReloadKey(k => k + 1); });
+
   useEffect(() => {
-    if (!matrixSlug) return;
-    setLoading(true);
-    setError('');
+    if (!matrixSlug) return undefined;
+    const silent = silentRef.current;
+    silentRef.current = false;
+    let cancelled = false;
+    if (!silent) {
+      setLoading(true);
+      setError('');
+    }
     fetch(`/api/compatibility/${matrixSlug}`)
       .then(res => res.json())
       .then(data => {
+        if (cancelled) return;
         if (data.error) throw new Error(data.error);
-        setMatrix(data.matrix);
+        setMatrix(prev => (sameVersion(prev, data.matrix) ? prev : data.matrix));
+        setError('');
       })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [matrixSlug]);
+      .catch(err => { if (!cancelled) setError(err.message); })
+      // Always clear on the request that actually finished: if a live refresh
+      // superseded the first load, the loader must still go away.
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [matrixSlug, reloadKey]);
 
   const downloadExcel = async () => {
     if (!matrix) return;

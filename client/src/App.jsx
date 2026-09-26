@@ -1,7 +1,8 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { reportLogout } from './reportDownload';
 import { notifyAuthChanged } from './authEvents';
-import { Routes, Route, useSearchParams } from 'react-router-dom';
+import { Routes, Route, useSearchParams, useLocation } from 'react-router-dom';
+import { useLiveUpdates } from './liveUpdates';
 import { startMicrosoftLogin } from './msalOauth';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
@@ -105,20 +106,14 @@ function AdminRoute({ darkMode, setDarkMode }) {
 }
 
 function MainContent() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  // The page is fully described by the URL (?product=&combination=, ?view=&doc=,
+  // ...), so a browser refresh reopens the same page instead of the dashboard.
+  const [searchParams] = useSearchParams();
 
   const view = searchParams.get('view') || '';
   const matrixSlug = searchParams.get('matrix') || '';
   const infoSlug = searchParams.get('info') || '';
   const docSlug = searchParams.get('doc') || '';
-
-  useEffect(() => {
-    const navEntries = performance.getEntriesByType('navigation');
-    const isReload = navEntries.length > 0 && navEntries[0].type === 'reload';
-    if (isReload && searchParams.toString()) {
-      setSearchParams(new URLSearchParams(), { replace: true });
-    }
-  }, []);
 
   const lazyView = (node) => <Suspense fallback={<CfLoader inline />}>{node}</Suspense>;
   if (view === 'compatibility' && matrixSlug) return lazyView(<CompatibilityTable matrixSlug={matrixSlug} />);
@@ -130,6 +125,11 @@ function MainContent() {
 function App() {
   const [darkMode, setDarkMode] = useState(false);
   const { user, loading: authLoading, logout } = useAuth();
+  const { pathname } = useLocation();
+
+  // Signed-in readers get admin changes pushed live. The admin panel does not
+  // subscribe, so a background refresh can never disturb an edit in progress.
+  useLiveUpdates(!!user && !pathname.startsWith('/admin'));
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');

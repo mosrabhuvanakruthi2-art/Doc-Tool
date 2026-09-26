@@ -8,31 +8,33 @@ import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
 import { reportDownload } from '../reportDownload';
 import { getJsonShared } from '../sharedGet';
+import { useContentChanged } from '../liveUpdates';
 
 function WelcomePage() {
   const [stats, setStats] = useState({ productTypes: 0, combinations: 0, compatibility: 0, cloudInfo: 0 });
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const [configRes, compatRes, cloudRes] = await Promise.all([
-          fetch('/api/product-config').then(r => r.json()),
-          getJsonShared('/api/compatibility'),
-          getJsonShared('/api/cloud-info'),
-        ]);
-        const configs = configRes.configs || [];
-        setStats({
-          productTypes: configs.length,
-          combinations: configs.reduce((sum, c) => sum + (c.combinations || []).length, 0),
-          compatibility: (compatRes.matrices || []).length,
-          cloudInfo: (cloudRes.items || []).length,
-        });
-      } catch (_) {}
-      setLoading(false);
-    };
-    load();
+  // Loader shows only on the first load; live refreshes update the numbers in place.
+  const load = useCallback(async () => {
+    try {
+      const [configRes, compatRes, cloudRes] = await Promise.all([
+        fetch('/api/product-config').then(r => r.json()),
+        getJsonShared('/api/compatibility'),
+        getJsonShared('/api/cloud-info'),
+      ]);
+      const configs = configRes.configs || [];
+      setStats({
+        productTypes: configs.length,
+        combinations: configs.reduce((sum, c) => sum + (c.combinations || []).length, 0),
+        compatibility: (compatRes.matrices || []).length,
+        cloudInfo: (cloudRes.items || []).length,
+      });
+    } catch (_) {}
+    setLoading(false);
   }, []);
+
+  useEffect(() => { load(); }, [load]);
+  useContentChanged(['productConfig', 'compatibility', 'cloudInfo'], load);
 
   if (loading) {
     return (
@@ -189,7 +191,7 @@ function FeatureTable() {
   const combination = searchParams.get('combination') || '';
   const section = searchParams.get('section') || 'inscope';
 
-  const { productTypes, combinationsByProduct, loading: configLoading } = useProductConfig();
+  const { productTypes, combinationsByProduct, ready: configReady } = useProductConfig();
 
   const [features, setFeatures] = useState([]);
   const [tags, setTags] = useState(['All']);
@@ -205,8 +207,11 @@ function FeatureTable() {
 
   const showWelcome = !productType && !combination;
 
+  // A URL pointing at a product/combination that no longer exists (deleted or
+  // renamed) goes back to the dashboard — but only judged against a product list
+  // that really loaded, so a refresh never bounces a valid page to the dashboard.
   useEffect(() => {
-    if (configLoading) return;
+    if (!configReady) return;
     if (!productType && !combination) return;
 
     const validProduct = productType && productTypes.includes(productType);
@@ -216,7 +221,7 @@ function FeatureTable() {
     if (!validProduct || !validCombo) {
       setSearchParams(new URLSearchParams());
     }
-  }, [productType, combination, productTypes, combinationsByProduct, configLoading, setSearchParams]);
+  }, [productType, combination, productTypes, combinationsByProduct, configReady, setSearchParams]);
 
 
   useEffect(() => {
@@ -231,8 +236,14 @@ function FeatureTable() {
     }
   }, [productType, combination, section, activeTag, search]);
 
-  const fetchFeatures = async () => {
-    setLoading(true);
+  // An admin changed features: refresh the open table in place.
+  useContentChanged(['features'], () => {
+    if (!showWelcome) fetchFeatures({ silent: true });
+  });
+
+  // `silent` refreshes in place (live update): no loader, rows stay where they are.
+  const fetchFeatures = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     const cacheKey = getCacheKey(productType, combination, section, search, activeTag);
     try {
       const params = new URLSearchParams();

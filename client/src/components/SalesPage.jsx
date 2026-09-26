@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, Fragment } from 'react';
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
+import { useContentChanged } from '../liveUpdates';
 import { useSearchParams } from 'react-router-dom';
 import { useProductConfig } from '../ProductConfigContext';
 import CfLoader from './CfLoader';
@@ -62,17 +63,26 @@ export default function SalesPage() {
   const selectProduct = (pt) => { setSearchParams({ product: pt }); setView('migrates'); setQuery(''); setOpenLimit(null); };
   const selectCombo = (name) => { setSearchParams({ product, combination: name }); setView('migrates'); setQuery(''); setOpenLimit(null); };
 
+  // Live refresh when an admin edits features or turns them on/off for sales:
+  // re-read quietly, keeping the selected combination, view and open reason.
+  const [reloadKey, setReloadKey] = useState(0);
+  const silentRef = useRef(false);
+  useContentChanged(['features'], () => { silentRef.current = true; setReloadKey((k) => k + 1); });
+
   useEffect(() => {
-    if (!product) return;
+    if (!product) return undefined;
+    const silent = silentRef.current;
+    silentRef.current = false;
     let cancelled = false;
-    setLoading(true);
+    if (!silent) setLoading(true);
     fetch('/api/features?sales=1&productType=' + encodeURIComponent(product))
       .then((r) => r.json())
       .then((d) => { if (!cancelled) setFeatures(d.features || []); })
-      .catch(() => { if (!cancelled) setFeatures([]); })
+      // A failed quiet refresh keeps what is on screen rather than blanking it.
+      .catch(() => { if (!cancelled && !silent) setFeatures([]); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [product]);
+  }, [product, reloadKey]);
 
   // Combinations for the product (config order first, then any extras seen in data), with counts.
   const combos = useMemo(() => {

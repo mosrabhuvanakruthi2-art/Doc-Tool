@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useContentChanged, sameVersion } from '../liveUpdates';
 import CfLoader from './CfLoader';
 import UpdatedOn from './UpdatedOn';
 import { reportDownload } from '../reportDownload';
@@ -269,19 +270,33 @@ function CloudInfoPage({ slug }) {
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
 
+  // Live refresh: re-read quietly (no loader) and only redraw if it changed.
+  const [reloadKey, setReloadKey] = useState(0);
+  const silentRef = useRef(false);
+  useContentChanged(['cloudInfo'], () => { silentRef.current = true; setReloadKey(k => k + 1); });
+
   useEffect(() => {
-    if (!slug) return;
-    setLoading(true);
-    setError('');
+    if (!slug) return undefined;
+    const silent = silentRef.current;
+    silentRef.current = false;
+    let cancelled = false;
+    if (!silent) {
+      setLoading(true);
+      setError('');
+    }
     fetch(`/api/cloud-info/${slug}`)
       .then(res => res.json())
       .then(data => {
+        if (cancelled) return;
         if (data.error) throw new Error(data.error);
-        setItem(data.item);
+        setItem(prev => (sameVersion(prev, data.item) ? prev : data.item));
+        setError('');
       })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [slug]);
+      .catch(err => { if (!cancelled) setError(err.message); })
+      // Always clear on the request that actually finished (see CompatibilityTable).
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [slug, reloadKey]);
 
   if (loading) {
     return <div className="cloud-info-page"><CfLoader inline /></div>;

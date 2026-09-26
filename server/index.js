@@ -27,6 +27,7 @@ const Revision = require('./models/Revision');
 const AuditLog = require('./models/AuditLog');
 const { buildChanges, buildInitialChanges } = require('./utils/revisionDiff');
 const { qStr, qEnum } = require('./utils/safeQuery');
+const liveUpdates = require('./utils/liveUpdates');
 const { HttpError, requireString } = require('./utils/validate');
 const { buildFieldChains } = require('./utils/revisionHistory');
 const { buildFeatureTableDocx } = require('./utils/featureDocx');
@@ -156,6 +157,13 @@ app.use('/api', (req, res, next) => {
   req.user = decoded;
   next();
 });
+
+// Live updates: after any successful content write, tell every open tab which
+// kinds of content changed so its screens refresh without a manual reload.
+// Registered after the login gate, so only authenticated writes broadcast, and
+// /api/live itself requires a signed-in session like every other route.
+app.use(liveUpdates.broadcastWrites);
+app.get('/api/live', (req, res) => liveUpdates.attach(req, res));
 
 // --------------- Auth ---------------
 

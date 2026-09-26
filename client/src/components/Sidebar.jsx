@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useProductConfig } from '../ProductConfigContext';
 import { useAuth } from '../AuthContext';
 import { getJsonShared } from '../sharedGet';
+import { useContentChanged } from '../liveUpdates';
 
 const PRODUCT_ICONS = {
   Message: (
@@ -119,17 +120,25 @@ function Sidebar() {
   // does not alter the tree, so refetching on each navigation was wasted work.
   useEffect(() => { loadDocs(); }, [loadDocs, activeView]);
 
+  const loadCompat = useCallback(() => {
+    getJsonShared('/api/compatibility')
+      .then((data) => setCompatMatrices(data.matrices || []))
+      .catch(() => {});
+  }, []);
+  const loadCloud = useCallback(() => {
+    getJsonShared('/api/cloud-info')
+      .then((data) => setCloudInfoItems(data.items || []))
+      .catch(() => {});
+  }, []);
+
+  // Admin changes pushed live: refresh just the affected menu. Access changes
+  // re-read the document tree so a newly granted (or revoked) document shows
+  // its new lock state at once.
+  useContentChanged(['compatibility'], loadCompat);
+  useContentChanged(['cloudInfo'], loadCloud);
+  useContentChanged(['documents', 'access'], loadDocs);
+
   useEffect(() => {
-    const loadCompat = () => {
-      getJsonShared('/api/compatibility')
-        .then((data) => setCompatMatrices(data.matrices || []))
-        .catch(() => {});
-    };
-    const loadCloud = () => {
-      getJsonShared('/api/cloud-info')
-        .then((data) => setCloudInfoItems(data.items || []))
-        .catch(() => {});
-    };
     loadCompat();
     loadCloud();
     const onCompatChanged = () => loadCompat();

@@ -1,0 +1,91 @@
+# Doc-Tool CI/CD (Bitbucket Pipelines). One file: every trigger is a section below.
+#
+#   any branch except main  -> checks (server syntax, client build, Docker images)
+#   main                    -> the same checks, then deploy to production
+#   custom: redeploy-current -> deploy the commit you run it on (manual re-run)
+#   custom: rollback         -> deploy an older commit you type in
+#
+# The deploy SSHes into the server and runs deploy/remote-deploy.sh, which checks
+# out the exact commit, rebuilds with docker compose, waits for the API to be
+# healthy and connected to MongoDB, and rolls back to the previous commit if not.
+# Variables and setup: see deploy/ci-ssh-deploy.sh and DEPLOY.md.
+
+image: node:22
+
+definitions:
+  caches:
+    npm-cache: ~/.npm
+  services:
+    docker:
+      memory: 3072          # the client image runs a full Vite build
+  steps:
+    - step: &check-server
+        name: Server - install and syntax check
+        caches:
+          - npm-cache
+        script:
+          - cd server
+          - npm ci --no-audit --no-fund
+          # No test suite exists yet; this catches syntax errors in every server file.
+          - find . -path ./node_modules -prune -o -name '*.js' -print0 | xargs -0 -n1 node --check
+          - echo "Server files parse OK"
+
+    - step: &build-client
+        name: Client - install and build
+        caches:
+          - npm-cache
+        script:
+          - cd client
+          - npm ci --no-audit --no-fund
+          - npm run build
+          - test -f dist/index.html
+
+    - step: &build-images
+        name: Docker images build
+        size: 2x                # room for the docker service's 3 GB
+        services:
+          - docker
+        caches:
+          - docker
+        script:
+          - docker build -t doc-tool-server:ci server
+          - docker build -t doc-tool-client:ci client
+
+    - step: &deploy
+        name: Deploy to production
+        deployment: production
+        image: atlassian/default-image:4
+        script:
+          - bash deploy/ci-ssh-deploy.sh "$BITBUCKET_COMMIT"
+
+pipelines:
+  default:
+    - parallel:
+        - step: *check-server
+        - step: *build-client
+        - step: *build-images
+
+  branches:
+    main:
+      - parallel:
+          - step: *check-server
+          - step: *build-client
+          - step: *build-images
+      - step: *deploy
+
+  custom:
+    # Bitbucket has no "re-run this exact commit" button: Pipelines -> Run
+    # pipeline -> pick the branch/commit -> redeploy-current.
+    redeploy-current:
+      - step: *deploy
+
+    rollback:
+      - variables:
+          - name: ROLLBACK_SHA
+            description: Commit to deploy (full or short SHA), e.g. from git log
+      - step:
+          name: Roll back production to ROLLBACK_SHA
+          deployment: production
+          image: atlassian/default-image:4
+          script:
+            - bash deploy/ci-ssh-deploy.sh "$ROLLBACK_SHA"

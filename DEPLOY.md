@@ -121,6 +121,36 @@ with a clear message if `MONGODB_URI` or `JWT_SECRET` is absent — so
 
 ---
 
+## Automatic deploys (Bitbucket Pipelines)
+
+`bitbucket-pipelines.yml` runs checks on every push (server syntax, client
+build, both Docker images) and, on `main`, deploys to production:
+`deploy/ci-ssh-deploy.sh` SSHes in and runs `deploy/remote-deploy.sh`, which
+checks out the exact commit in `/home/raviteja/Doc-Tool`, runs
+`docker compose build` + `up -d`, and waits for `/api/health` to report
+`"mongo":"connected"`. If it doesn't, it puts the previous commit back and
+restarts that. Env files, the database and the uploads volume are never touched.
+
+Manual pipelines (Pipelines → Run pipeline): **redeploy-current** re-deploys the
+chosen commit; **rollback** deploys the commit you type into `ROLLBACK_SHA`.
+
+Repository variables (Repository settings → Pipelines → Repository variables):
+
+| Name | Secured | Value |
+|---|---|---|
+| `DEPLOY_HOST` | no | server hostname or IP |
+| `DEPLOY_USER` | no | SSH user (must be able to run `docker`) |
+| `SSH_PRIVATE_KEY` | **yes** | the deploy key, base64 on one line: `base64 -w0 <keyfile>` |
+| `DEPLOY_PORT` | no | optional, default `22` |
+| `DEPLOY_PATH` | no | optional, default `/home/raviteja/Doc-Tool` |
+| `SSH_KNOWN_HOSTS` | no | optional; otherwise add the host under Pipelines → SSH keys → Known hosts |
+
+The server's clone must be able to `git fetch` without a prompt (stored
+credentials or an access key), and its tracked files must be unmodified —
+the deploy refuses, changing nothing, if they aren't.
+
+---
+
 ## Every deploy after a `git push`
 
 ```bash
